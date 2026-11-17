@@ -7,8 +7,12 @@ recognized **locally**, without any external service.
 
 > **AudD discovers. Local fingerprints remember. Music Assistant displays.**
 
-> ⚠️ **Status: experimental.** It works on real vinyl and is tested end to end, but it needs a
-> Music Assistant **Nightly** build and has known limitations (see below). Feedback is welcome.
+> ⚠️ **Status: experimental.** It works on real vinyl and is tested end to end, but it has
+> known limitations (see below). Feedback is welcome.
+>
+> **For now it requires Music Assistant Nightly.** The live-source analysis it depends on is
+> not in a stable or beta release yet. It will work on stable once Music Assistant ships that
+> feature there.
 
 ## How it works
 
@@ -26,8 +30,8 @@ The more you play, the fewer AudD requests are needed.
 
 ## Requirements
 
-- **Music Assistant Nightly** (2.11 development builds from November 2026 or later). Analysing
-  live audio sources is not in a stable release yet.
+- **Music Assistant Nightly** (2.11 development builds from November 2026 or later). **For now
+  this is required:** analysing live audio sources is not in a stable or beta release yet.
 - A **live audio source that allows audio analysis**, for example *Sendspin Source* or
   *VBAN Receiver*.
 - An **AudD API token**, needed to identify music that hasn't been learned yet (see below).
@@ -84,11 +88,13 @@ minimum gap).
 
 These are known and documented on purpose. Some are being worked on (see [ROADMAP.md](ROADMAP.md)).
 
-- **Records without silence between tracks** (DJ mixes, live albums, continuous sides,
-  crossfades) are **not handled well yet**. Without a gap the provider doesn't notice that the
-  track changed: the previous title stays on screen, and it may learn the next track under the
-  previous track's name. *Being worked on:* using the track length to detect the expected end
-  of a track.
+- **Records without silence between tracks are not supported yet** (DJ mixes, live albums,
+  continuous sides, crossfades). Without a gap the provider doesn't notice that the track
+  changed: the previous title stays on screen, and **it may learn the next track under the
+  previous track's name**, so that track can later be recognized wrongly. Support is planned
+  for a later version (using the track length to detect where a track should end). Until then,
+  we recommend turning the provider off for such records, or limiting it to sources where you
+  play records with gaps. There is no way yet to remove wrongly learned tracks (see below).
 - **One long track** (for example a 20-minute classical piece) works: it is recognized once,
   and learning stops after 10 minutes.
 - **The album shown is AudD's**, often a digital compilation rather than the LP you are
@@ -104,6 +110,8 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
 - **Artwork is best effort:** taken from Apple Music, Spotify or Deezer when AudD provides it.
   Some recordings have none.
 - **Live audio sources only.** Radio streams without song info are not supported yet.
+- **The learned database can't be edited yet.** You can't view or remove individual learned
+  tracks; the only option is deleting the whole database file. Manual cleanup is on the roadmap.
 
 ## Troubleshooting
 
@@ -122,6 +130,10 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 If nothing is recognized, check that the source allows audio analysis, that the provider
 is enabled, and that music is above the silence threshold (the `audio resumed at … dBFS`
 log line shows the level).
+
+## Licence
+
+[Apache License 2.0](LICENSE), the same licence as Music Assistant.
 
 ## Development
 

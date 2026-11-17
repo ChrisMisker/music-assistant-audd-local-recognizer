@@ -3,6 +3,8 @@ name = "music-assistant-audd-local-recognizer"
 version = "0.5.3"
 description = "Music Assistant audio-analysis provider: AudD discovery + local Panako fingerprints"
 requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 # Runtime requirements are declared in audd_local_recognizer/manifest.json (MA installs them).
 dependencies = ["audalign==1.3.2"]
 
