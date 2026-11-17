@@ -33,7 +33,7 @@ if [[ $SKIP_CHECKS == 0 ]]; then
   uv run --quiet pytest -q
   uv run --quiet ruff check .
   uv run --quiet ruff format --check .
-  uv run --quiet mypy
+  scripts/typecheck-with-ma-sources.sh | tail -1   # mypy as CI runs it (MA sources, no install)
   uv run --quiet codespell
 fi
 

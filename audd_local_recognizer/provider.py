@@ -168,9 +168,11 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     def _setting_int(self, key: str, default: int) -> int:
         value = self.config.get_value(key)
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return default
         try:
-            return int(value) if value is not None else default
-        except TypeError, ValueError:
+            return int(value)
+        except ValueError:
             return default
 
     def _token(self) -> str:
@@ -179,9 +181,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     def _source_enabled(self, streamdetails: StreamDetails) -> bool:
         if bool(self.config.get_value(CONF_ALL_AUDIO_SOURCES)):
             return True
-        selected = self.config.get_value(CONF_AUDIO_SOURCES) or []
-        if isinstance(selected, str):
-            selected = [selected]
+        value = self.config.get_value(CONF_AUDIO_SOURCES)
+        if isinstance(value, str):
+            selected = {value}
+        elif isinstance(value, list):
+            selected = {str(item) for item in value}
+        else:
+            selected = set()
         return f"{streamdetails.provider}|{streamdetails.item_id}" in selected
 
     async def _start_analysis(
