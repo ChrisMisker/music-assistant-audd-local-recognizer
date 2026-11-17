@@ -1,4 +1,5 @@
-"""Music Assistant glue for Audio Recognizer: AudD + Local Fingerprints.
+"""
+Music Assistant glue for Audio Recognizer: AudD + Local Fingerprints.
 
 The recognition logic lives in engine.py (MA-independent). This module only maps MA's
 AudioAnalysisProvider lifecycle onto one RecognitionEngine per live analysis session and
@@ -36,7 +37,7 @@ STORAGE_SUBDIR = "audd_local_recognizer"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
-CONF_AUDD_API_TOKEN = "audd_api_token"
+CONF_AUDD_API_TOKEN = "audd_api_token"  # noqa: S105 - the name of a setting, not a secret
 CONF_SILENCE_DBFS = "silence_threshold_dbfs"
 CONF_RESUME_DBFS = "resume_threshold_dbfs"
 CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
@@ -241,7 +242,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def _fingerprint(self, pcm: bytes, fmt: PcmFormat) -> Fingerprints:
         # _run_offloaded keeps CPU work below playback (MA's analysis pool + solo lock).
-        return await self._run_offloaded(fingerprint_window, pcm, fmt)
+        hashes: Fingerprints = await self._run_offloaded(fingerprint_window, pcm, fmt)
+        return hashes
 
     def _publish(self, session_id: str, metadata: dict[str, Any]) -> bool:
         # Newer MA returns bool (False = stop recognizing); slightly older Nightlies

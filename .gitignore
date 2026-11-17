@@ -9,3 +9,7 @@ __pycache__/
 # local deployment config (never commit)
 .env
 .deploy.env
+.coverage
+.DS_Store
+# the data of a locally started server
+.data/

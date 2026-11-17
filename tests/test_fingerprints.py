@@ -140,7 +140,8 @@ def _music(rate: int, seconds: float = 12) -> np.ndarray:
         0.01 * np.sin(2 * np.pi * f * t + p)
         for f, p in zip(rng.uniform(2000, 6000, 12), rng.uniform(0, 6.28, 12), strict=True)
     )
-    return (0.1 * signal + noise).astype("<f4")
+    music: np.ndarray = (0.1 * signal + noise).astype("<f4")
+    return music
 
 
 def test_resample_is_noop_at_target_rate() -> None:

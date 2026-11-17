@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -13,7 +13,7 @@ from audd_local_recognizer.audd_client import (
     pick_artwork,
 )
 
-TOKEN = "secret-token-123"
+TOKEN = "secret-token-123"  # noqa: S105 - a fake token for the tests
 
 APPLE = {"artwork": {"url": "https://apple/{w}x{h}bb.jpg"}}
 SPOTIFY = {
@@ -106,7 +106,7 @@ class _FakeResponse:
             raise self._payload
         return self._payload
 
-    async def __aenter__(self) -> _FakeResponse:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *args: object) -> None:

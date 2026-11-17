@@ -1,4 +1,5 @@
-"""Recognition state machine for one live stream, independent of Music Assistant.
+"""
+Recognition state machine for one live stream, independent of Music Assistant.
 
 Model
 -----
@@ -207,7 +208,8 @@ def describe(metadata: dict[str, Any] | None) -> str:
 
 
 class RecognitionEngine:
-    """Gap/passage state machine plus recognition and learning for one stream.
+    """
+    Gap/passage state machine plus recognition and learning for one stream.
 
     Dependencies are injected so the engine can be tested without Music Assistant:
     - fingerprint: async PCM window -> density-reduced hashes (CPU work offloaded)
@@ -217,7 +219,7 @@ class RecognitionEngine:
     - spawn: start a background task
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - injected dependencies keep the engine testable
         self,
         *,
         fmt: PcmFormat,
@@ -450,7 +452,7 @@ class RecognitionEngine:
         except AudDError as err:
             self._register_audd_failure(str(err))
             return None
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure is an AudD failure, never fatal
             self._register_audd_failure(f"{type(err).__name__}: {err}")
             return None
         self.audd_backoff_seconds = 0

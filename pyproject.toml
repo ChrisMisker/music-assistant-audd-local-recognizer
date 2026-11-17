@@ -2,44 +2,162 @@
 name = "music-assistant-audd-local-recognizer"
 version = "0.5.3"
 description = "Music Assistant audio-analysis provider: AudD discovery + local Panako fingerprints"
-requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+requires-python = ">=3.14"
 # Runtime requirements are declared in audd_local_recognizer/manifest.json (MA installs them).
 dependencies = ["audalign==1.3.2"]
 
 [dependency-groups]
-# Local development and tests. Music Assistant itself is deliberately NOT installed:
-# the MA-independent modules are unit-tested here, provider.py is compile-checked inside
-# the real MA Nightly container by scripts/deploy-to-ma.sh.
+# Local development: unit tests, lint, types. Music Assistant itself is deliberately NOT part of
+# this group, so `uv sync` never installs the server on a developer machine. The MA-independent
+# modules are tested here; the tests that need a real server skip when it is absent.
 dev = [
-    "audalign==1.3.2",
-    "aiohttp>=3.10",
-    "numpy",
-    "pytest>=8",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.8",
+  "audalign==1.3.2",
+  "aiohttp>=3.10",
+  "numpy",
+  "codespell==2.4.3",
+  "mypy==2.3.0",
+  "pre-commit==4.6.2",
+  "pytest==9.1.1",
+  "pytest-asyncio>=0.24",
+  "pytest-timeout==2.4.0",
+  "ruff==0.16.5",
+]
+# Only for CI (`uv sync --all-groups`): a real Music Assistant server, as in the community provider
+# template. The server version this provider is developed against: a commit after the @ (must
+# include live AudioSource analysis and report_stream_metadata); change it and run `uv lock`.
+server = [
+  "music-assistant @ git+https://github.com/music-assistant/server@c94d07a9a1f490e3282bef2088d2b650c362b9d7",
+  # the requirements of the server's Sendspin provider, which it starts at every boot; they follow
+  # music_assistant/providers/sendspin/manifest.json of the server
+  "aiosendspin[server]==10.3.0",
+  "av==19.0.2",
+  "pytest-aiohttp==1.1.1",
 ]
 
 [tool.uv]
+# the provider is loaded by the server from its folder, never installed as a package
 package = false
+default-groups = ["dev"]
+
+[[tool.uv.index]]
+explicit = true
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+
+# the server takes torch from the CPU index; PyPI's Linux build pulls in gigabytes of GPU libraries
+[tool.uv.sources]
+torch = {index = "pytorch-cpu"}
+torchaudio = {index = "pytorch-cpu"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+timeout = 120
 filterwarnings = [
-    "ignore::SyntaxWarning",  # pydub (audalign dependency) on Python 3.14
-    "ignore::DeprecationWarning",
+  "ignore::SyntaxWarning",  # pydub (audalign dependency) on Python 3.14
+  "ignore::DeprecationWarning",
 ]
+
+[tool.mypy]
+platform = "linux"
+python_version = "3.14"
+files = ["."]
+exclude = ['^\.venv/']
+ignore_missing_imports = true
+check_untyped_defs = true
+disable_error_code = [
+  "annotation-unchecked",
+  "import-not-found",
+  "import-untyped",
+]
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+enable_error_code = [
+  "ignore-without-code",
+  "possibly-undefined",
+  "redundant-self",
+  "truthy-iterable",
+]
+extra_checks = true
+local_partial_types = true
+no_implicit_optional = true
+no_implicit_reexport = true
+show_error_codes = true
+strict_equality = true
+strict_optional = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+# Without Music Assistant installed (local dev), its base class is Any. CI has the server.
+[[tool.mypy.overrides]]
+module = ["audd_local_recognizer.provider", "tests.test_server"]
+disallow_subclassing_any = false
+warn_unused_ignores = false
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
 
+[tool.ruff.format]
+line-ending = "lf"
+
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ASYNC", "TC", "PLC0415", "S608"]
+select = ["ALL"]
+# the multi-line docstring summary starts on the line after the quotes
+extend-select = ["D213"]
+ignore = [
+  "ANN002", # Just annoying, not really useful
+  "ANN003", # Just annoying, not really useful
+  "ANN401", # Opinioated warning on disallowing dynamically typed expressions
+  "ARG002", # A provider implements methods whose arguments it does not always need
+  "ASYNC109", # Not relevant, since we use helpers with configurable timeouts
+  "ASYNC240", # Not relevant, we use asyncio not trio/anyio
+  "COM812", # Conflicts with the Ruff formatter
+  "CPY001", # Just annoying, not really useful
+  "D203", # Conflicts with other rules
+  "D417", # False positives in some occasions
+  "E501", # Handled by ruff formatter
+  "EM101", # Just annoying, not really useful
+  "EM102", # Just annoying, not really useful
+  "FIX002", # Just annoying, not really useful
+  "N818", # Just annoying, not really useful
+  "PLR2004", # Just annoying, not really useful
+  "S101", # assert is often used to satisfy type checking
+  "TC001", # Just annoying, not really useful
+  "TC003", # Just annoying, not really useful
+  "TD002", # Just annoying, not really useful
+  "TD003", # Just annoying, not really useful
+  "TRY003", # Just annoying, not really useful
+]
+
+[tool.ruff.lint.pydocstyle]
+# Sphinx-style docstrings with :param:
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+# command line scripts
+"scripts/**" = ["INP001", "T201"]
+# tests: descriptive test names over docstrings, private access to the engine under test
+"tests/**" = ["D103", "SLF001", "PLR0913", "FBT001", "FBT002"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["audd_local_recognizer", "music_assistant", "conftest"]
+known-first-party = ["music_assistant", "audd_local_recognizer", "tests"]
+
+[tool.codespell]
+skip = "uv.lock,LICENSE,*/translations/*"

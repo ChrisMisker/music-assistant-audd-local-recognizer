@@ -1,3 +1,30 @@
 {
-  "name": "Audio Recognizer: AudD + Local Fingerprints"
+  "manifest": {
+    "name": "Audio Recognizer: AudD + Local Fingerprints",
+    "description": "Recognizes music on live audio sources such as a turntable. Known tracks are recognized locally from fingerprints it learns; unknown tracks are identified by sending a short sample to AudD (a paid service, API token required)."
+  },
+  "config_entries": {
+    "audd_api_token": {
+      "label": "AudD API token",
+      "description": "Needed to identify music the provider has not learned yet. Without a token only previously learned tracks are recognized (locally). AudD is a paid service with a free trial; get a token at https://dashboard.audd.io"
+    },
+    "all_audio_sources": {
+      "label": "Recognize all live audio sources"
+    },
+    "audio_sources": {
+      "label": "Audio sources to recognize"
+    },
+    "silence_threshold_dbfs": {
+      "label": "Silence threshold (dBFS)",
+      "description": "Audio at or below this level counts towards a track gap."
+    },
+    "resume_threshold_dbfs": {
+      "label": "Resume threshold (dBFS)",
+      "description": "Audio at or above this level ends a track gap."
+    },
+    "minimum_gap_seconds": {
+      "label": "Minimum track gap (seconds)",
+      "description": "How long the silence must last to count as a track change."
+    }
+  }
 }

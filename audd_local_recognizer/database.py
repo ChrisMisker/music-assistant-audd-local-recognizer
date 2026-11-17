@@ -1,4 +1,5 @@
-"""Persistent SQLite store for tracks, passage-tagged reference windows and landmarks.
+"""
+Persistent SQLite store for tracks, passage-tagged reference windows and landmarks.
 
 All methods are blocking; call them through a thread offload from async code.
 """
@@ -71,7 +72,8 @@ _SPACES = re.compile(r"\s+")
 
 
 def _normalize(text: str) -> str:
-    """Casefold, drop quote characters and collapse whitespace.
+    """
+    Casefold, drop quote characters and collapse whitespace.
 
     AudD spells the same artist differently between results, e.g. 'Nat "King" Cole'
     and 'Nat King Cole'; both must map to one track.
@@ -120,7 +122,8 @@ class FingerprintDatabase:
         self._rekey_tracks()
 
     def _rekey_tracks(self) -> None:
-        """Re-apply track_key to stored tracks, merging tracks that now coincide.
+        """
+        Re-apply track_key to stored tracks, merging tracks that now coincide.
 
         Keeps the database consistent when the key normalization improves. References of
         a merged duplicate move to the surviving (oldest) track.
@@ -165,7 +168,8 @@ class FingerprintDatabase:
         passage_offset_seconds: float,
         hashes: Fingerprints,
     ) -> tuple[int, int]:
-        """Persist one reference window; return (reference_id, landmark_count).
+        """
+        Persist one reference window; return (reference_id, landmark_count).
 
         Returns (0, 0) and stores nothing when the window has no landmarks.
         """
@@ -177,7 +181,8 @@ class FingerprintDatabase:
         passage_id: str,
         windows: list[tuple[float, Fingerprints]],
     ) -> list[tuple[int, int]]:
-        """Persist several reference windows in one transaction.
+        """
+        Persist several reference windows in one transaction.
 
         Returns (reference_id, landmark_count) per window, (0, 0) for empty windows.
         """
@@ -208,7 +213,8 @@ class FingerprintDatabase:
         query: Fingerprints,
         exclude_passage_id: str | None = None,
     ) -> tuple[QueryMatch, dict[str, Any]] | None:
-        """Return the strongest reference candidate for a query, or None.
+        """
+        Return the strongest reference candidate for a query, or None.
 
         References learned in exclude_passage_id are ignored, so a passage can never
         recognize itself from windows it learned seconds earlier.

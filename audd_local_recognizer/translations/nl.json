@@ -1,0 +1,30 @@
+{
+  "manifest": {
+    "name": "Audioherkenning: AudD + lokale fingerprints",
+    "description": "Herkent muziek op live audiobronnen zoals een platenspeler. Bekende nummers worden lokaal herkend aan de hand van fingerprints die de provider leert; onbekende nummers worden geïdentificeerd door een kort fragment naar AudD te sturen (een betaalde dienst, API-token nodig)."
+  },
+  "config_entries": {
+    "audd_api_token": {
+      "label": "AudD API-token",
+      "description": "Nodig om muziek te herkennen die de provider nog niet heeft geleerd. Zonder token worden alleen eerder geleerde nummers (lokaal) herkend. AudD is een betaalde dienst met een gratis proefperiode; een token krijg je op https://dashboard.audd.io"
+    },
+    "all_audio_sources": {
+      "label": "Alle live audiobronnen herkennen"
+    },
+    "audio_sources": {
+      "label": "Te herkennen audiobronnen"
+    },
+    "silence_threshold_dbfs": {
+      "label": "Stiltedrempel (dBFS)",
+      "description": "Audio op of onder dit niveau telt mee als stilte tussen nummers."
+    },
+    "resume_threshold_dbfs": {
+      "label": "Hervatdrempel (dBFS)",
+      "description": "Audio op of boven dit niveau beëindigt de stilte tussen nummers."
+    },
+    "minimum_gap_seconds": {
+      "label": "Minimale stilte tussen nummers (seconden)",
+      "description": "Hoe lang de stilte moet duren om als nieuw nummer te tellen."
+    }
+  }
+}

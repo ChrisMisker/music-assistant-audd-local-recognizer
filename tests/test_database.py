@@ -140,7 +140,7 @@ def test_reopen_merges_tracks_that_now_share_a_key(db_path: Path) -> None:
                 json.dumps({"artist": 'Nat "King" Cole', "title": "Unforgettable"}),
             ),
         )
-        old = int(cur.lastrowid)
+        old = int(cur.lastrowid or 0)
     db.add_reference(old, "p2", 0.0, _landmarks(5, prefix="x"))
     reopened = FingerprintDatabase(db_path)
     stats = reopened.stats()

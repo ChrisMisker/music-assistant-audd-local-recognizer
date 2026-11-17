@@ -18,9 +18,16 @@ from audd_local_recognizer.engine import (
     MatchConfirmer,
 )
 from audd_local_recognizer.fingerprints import QueryMatch
-from conftest import music, silence
+from tests.conftest import music, silence
 
 GAP = 3  # seconds of silence between tracks (min gap is 2 s)
+
+
+def current_passage_id(h: Any) -> str:
+    """Return the id of the open passage (a call, so type narrowing from earlier asserts ends)."""
+    passage = h.engine.passage
+    assert passage is not None
+    return str(passage.id)
 
 
 def songs_in(window: list[int]) -> set[int]:
@@ -105,7 +112,7 @@ async def test_b_track_transition_is_a_hard_boundary(make_harness: Any) -> None:
     assert songs_in(h.audd_calls[-1]) == {2}
     # song 2 is learned under its own track, in its own passage
     refs = h.references()
-    assert {t for t, p in refs if p == h.engine.passage.id} == {2}
+    assert {t for t, p in refs if p == current_passage_id(h)} == {2}
 
 
 async def test_c_audd_miss_then_retry_in_same_passage(make_harness: Any) -> None:
@@ -171,7 +178,8 @@ async def test_g_late_fingerprint_result_is_discarded(make_harness: Any) -> None
     for second in range(12):
         h.engine.feed(music(1, second))
     late = h.engine.task
-    assert late is not None and not late.done()
+    assert late is not None
+    assert not late.done()
     for _ in range(GAP):
         h.engine.feed(silence())
     for second in range(5):

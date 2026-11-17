@@ -29,10 +29,12 @@ done
 cd "$REPO_ROOT"
 
 if [[ $SKIP_CHECKS == 0 ]]; then
-  log "Local checks (pytest, ruff)"
+  log "Local checks (pytest, ruff, mypy, codespell; same as CI minus the server tests)"
   uv run --quiet pytest -q
-  uv run --quiet ruff check audd_local_recognizer tests
-  uv run --quiet ruff format --check audd_local_recognizer tests
+  uv run --quiet ruff check .
+  uv run --quiet ruff format --check .
+  uv run --quiet mypy
+  uv run --quiet codespell
 fi
 
 VERSION="$(grep -m1 '^VERSION' "$PACKAGE/provider.py" | cut -d'"' -f2)"
@@ -49,7 +51,7 @@ log "Syncing source to $HA_HOST:$REMOTE_SRC"
 # Replace the package dir there (scoped delete), keep everything else in REMOTE_SRC.
 COPYFILE_DISABLE=1 tar -czf - \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '*.sqlite3*' \
-  "$PACKAGE" scripts tests pyproject.toml README.md CLAUDE.md ROADMAP.md \
+  "$PACKAGE" scripts tests pyproject.toml README.md CLAUDE.md ROADMAP.md AGENTS.md LICENSE \
   | remote "$REMOTE_SUDO mkdir -p '$REMOTE_SRC' && $REMOTE_SUDO rm -rf '$REMOTE_SRC/$PACKAGE' \
       && $REMOTE_SUDO tar -xzf - -o -C '$REMOTE_SRC' \
       && echo '$VERSION $COMMIT$DIRTY' | $REMOTE_SUDO tee '$REMOTE_SRC/DEPLOYED_VERSION' >/dev/null"

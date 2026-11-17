@@ -1,4 +1,5 @@
-"""PCM helpers, Panako fingerprinting, density reduction and offset scoring.
+"""
+PCM helpers, Panako fingerprinting, density reduction and offset scoring.
 
 Nothing in this module depends on Music Assistant, so it can be unit-tested on its own.
 """
@@ -63,7 +64,8 @@ class QueryMatch:
 
 
 def pcm_to_mono_s16(pcm: bytes, fmt: PcmFormat) -> np.ndarray:
-    """Convert explicit little-endian PCM to mono int16 samples.
+    """
+    Convert explicit little-endian PCM to mono int16 samples.
 
     32-bit audio is never guessed: the content type decides float vs integer.
     """
@@ -86,7 +88,8 @@ def pcm_to_mono_s16(pcm: bytes, fmt: PcmFormat) -> np.ndarray:
         msg = f"Unsupported channel count: {fmt.channels}"
         raise ValueError(msg)
 
-    return np.clip(np.rint(data * 32767.0), -32768, 32767).astype(np.int16)
+    mono: np.ndarray = np.clip(np.rint(data * 32767.0), -32768, 32767).astype(np.int16)
+    return mono
 
 
 def pcm_dbfs(pcm: bytes, fmt: PcmFormat) -> float:
@@ -124,7 +127,8 @@ def resample_s16(samples: np.ndarray, source_rate: int, target_rate: int) -> np.
     resampled = resample_poly(
         samples.astype(np.float32), target_rate // divisor, source_rate // divisor
     )
-    return np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+    result: np.ndarray = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+    return result
 
 
 def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
@@ -171,7 +175,8 @@ def score_reference(
     query: Fingerprints,
     stored_rows: Iterable[tuple[str, int]],
 ) -> tuple[int, int, int, float]:
-    """Score one stored reference against a query by coherent time offset.
+    """
+    Score one stored reference against a query by coherent time offset.
 
     Returns (shared_hashes, best_offset, best_votes, ratio) where ratio is
     best_votes / shared_hashes. Only rows whose hash occurs in the query matter.

@@ -1,4 +1,5 @@
-"""Shared test harness: a deterministic fake stream for the RecognitionEngine.
+"""
+Shared test harness: a deterministic fake stream for the RecognitionEngine.
 
 Audio is 100 Hz mono s16le. Every second of "music" is a constant sample value
 code = 1000 * song + second (always loud enough to count as music), silence is zeros.
@@ -10,6 +11,7 @@ position in the window), which gives exact offset votes in the real database.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import io
 import logging
 import wave
@@ -25,6 +27,12 @@ from audd_local_recognizer.fingerprints import Fingerprints, PcmFormat
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# The server's `mass` fixture (a started server with this repository as its provider folder) is
+# only available where Music Assistant is installed: in CI (`uv sync --all-groups`). Locally the
+# tests that need it skip.
+if importlib.util.find_spec("music_assistant") is not None:
+    pytest_plugins = ["music_assistant.testing"]
 
 RATE = 100
 FMT = PcmFormat(sample_rate=RATE, channels=1, sample_width=2, content_type="s16le")

@@ -1,4 +1,5 @@
-"""Minimal AudD standard-recognition client (no SDK dependency).
+"""
+Minimal AudD standard-recognition client (no SDK dependency).
 
 Product boundary: AudD only identifies unknown audio. We never store, imitate or
 reverse-engineer AudD fingerprints; local fingerprints are our own Panako hashes.
@@ -87,7 +88,8 @@ def parse_result(result: Any) -> dict[str, Any] | None:
 
 
 def parse_response(payload: Any) -> dict[str, Any] | None:
-    """Interpret a full AudD JSON response.
+    """
+    Interpret a full AudD JSON response.
 
     Returns metadata on a match, None on a normal no-match (including error 300),
     and raises AudDError on any real API error.
