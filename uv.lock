@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "music-assistant-audd-local-recognizer"
-version = "0.5.3"
+version = "0.6.0"
 source = { virtual = "." }
 dependencies = [
     { name = "audalign" },

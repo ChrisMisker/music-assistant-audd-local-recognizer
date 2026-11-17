@@ -137,6 +137,8 @@ log line shows the level).
 
 ## Development
 
+Release history: [CHANGELOG.md](CHANGELOG.md).
+
 See [CLAUDE.md](CLAUDE.md) for architecture, design decisions and the development
 workflow, and [ROADMAP.md](ROADMAP.md) for plans and known issues. Tests run without Music
 Assistant installed: `uv sync && uv run pytest`.

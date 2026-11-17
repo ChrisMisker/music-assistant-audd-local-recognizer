@@ -51,7 +51,7 @@ log "Syncing source to $HA_HOST:$REMOTE_SRC"
 # Replace the package dir there (scoped delete), keep everything else in REMOTE_SRC.
 COPYFILE_DISABLE=1 tar -czf - \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '*.sqlite3*' \
-  "$PACKAGE" scripts tests pyproject.toml README.md CLAUDE.md ROADMAP.md AGENTS.md LICENSE \
+  "$PACKAGE" scripts tests pyproject.toml README.md CLAUDE.md ROADMAP.md AGENTS.md LICENSE CHANGELOG.md \
   | remote "$REMOTE_SUDO mkdir -p '$REMOTE_SRC' && $REMOTE_SUDO rm -rf '$REMOTE_SRC/$PACKAGE' \
       && $REMOTE_SUDO tar -xzf - -o -C '$REMOTE_SRC' \
       && echo '$VERSION $COMMIT$DIRTY' | $REMOTE_SUDO tee '$REMOTE_SRC/DEPLOYED_VERSION' >/dev/null"
