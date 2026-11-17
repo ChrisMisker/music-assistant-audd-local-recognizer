@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 STORAGE_SUBDIR = "audd_local_recognizer"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
@@ -244,7 +244,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         return await self._run_offloaded(fingerprint_window, pcm, fmt)
 
     def _publish(self, session_id: str, metadata: dict[str, Any]) -> bool:
-        return self.report_stream_metadata(
+        # Newer MA returns bool (False = stop recognizing); slightly older Nightlies
+        # (e.g. the one this was first tested on) return None. Only False is a refusal.
+        accepted = self.report_stream_metadata(
             session_id,
             StreamMetadata(
                 title=metadata["title"],
@@ -254,6 +256,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 uri=metadata.get("uri"),
             ),
         )
+        return accepted is not False
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
