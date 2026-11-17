@@ -1,23 +1,130 @@
 # Audio Recognizer: AudD + Local Fingerprints
 
-An experimental Music Assistant audio-analysis provider that recognizes music on live
-audio sources, such as a turntable on a line-in, and learns your music over time.
+A Music Assistant audio-analysis provider that recognizes the music playing on a **live audio
+source**, such as a turntable on a line-in, and shows the title, artist, album and artwork on
+your player. It learns your music as you play it, so records you have played before are
+recognized **locally**, without any external service.
 
-**AudD discovers. Local fingerprints remember. Music Assistant displays.**
+> **AudD discovers. Local fingerprints remember. Music Assistant displays.**
 
-1. Use a live AudioSource that allows audio analysis (for example Sendspin Source or VBAN Receiver).
-2. The provider listens to that live input.
-3. Tracks it has heard before are recognized **locally**, with no external service.
-4. Unknown tracks are sent to [AudD](https://audd.io) for identification.
-5. It then learns local fingerprints (Panako, via audalign) so the next play is recognized locally.
-6. The recognized title, artist, album and artwork are shown on the Music Assistant player.
+> ⚠️ **Status: experimental.** It works on real vinyl and is tested end to end, but it needs a
+> Music Assistant **Nightly** build and has known limitations (see below). Feedback is welcome.
 
-- No Music Assistant core patch is needed. Requires a Music Assistant Nightly (2.11 dev)
-  build with AudioSource analysis support.
-- An AudD API token is needed to identify music that hasn't been learned yet. Without one,
-  only already-learned tracks are recognized.
-- Local fingerprints are independent of AudD and stay on your Music Assistant server.
-- Track changes are detected from the silence between tracks. Records without gaps
-  (live albums, DJ mixes) are not handled well yet.
+## How it works
 
-Status: experimental. See `CLAUDE.md` for development notes.
+1. You play a record through a live source in Music Assistant (for example **Sendspin Source**).
+2. The provider listens to that live audio. Silence between tracks marks a track change.
+3. For each new track it first checks its **local fingerprint database**. A track it has heard
+   before is recognized locally: no internet, no cost.
+4. An unknown track is identified by **[AudD](https://audd.io)**, an online music recognition
+   service, using a short sample.
+5. While the track plays, the provider learns local fingerprints of it, so next time it is
+   recognized locally.
+6. The recognized title, artist, album and artwork appear on the Music Assistant player.
+
+The more you play, the fewer AudD requests are needed.
+
+## Requirements
+
+- **Music Assistant Nightly** (2.11 development builds from November 2026 or later). Analysing
+  live audio sources is not in a stable release yet.
+- A **live audio source that allows audio analysis**, for example *Sendspin Source* or
+  *VBAN Receiver*.
+- An **AudD API token**, needed to identify music that hasn't been learned yet (see below).
+
+### About AudD: a paid service, with a free trial
+
+AudD is a commercial API. **To identify new music you need an AudD account and API token.**
+
+- **Free trial:** 300 requests within 14 days, no credit card required.
+- After that a **paid plan** is needed. At the time of writing the smallest plan
+  (*Indie*) is **$5/month for 1,000 requests**, plus $5 per extra 1,000. Check
+  [audd.io/pricing](https://audd.io/pricing/) for current prices.
+
+How many requests to expect:
+- **An unknown track** usually costs **1 to 3 requests**. AudD sometimes needs a second try,
+  and the provider waits ~24 seconds into a track before the first try.
+- **A track you've played before** costs **0 requests**: it is recognized locally.
+- Example: learning 10 LPs (~100 tracks) takes roughly 100–300 requests. After that, replaying
+  them is free.
+
+Without a token the provider still recognizes everything it has already learned. It just can't
+identify or learn new music.
+
+Get a token at [dashboard.audd.io](https://dashboard.audd.io) and enter it in the provider
+settings in Music Assistant.
+
+## Privacy
+
+- **Only audio samples of music not recognized locally** are sent to AudD: about 12 seconds of
+  mono audio per request, together with your API token. Nothing else is sent.
+- The **local fingerprints are computed by this provider** (Panako fingerprints via
+  [audalign](https://pypi.org/project/audalign/)) and are stored only on your Music Assistant
+  server, in `audd_local_recognizer/fingerprints.sqlite3` in its data folder. They are never
+  uploaded or shared.
+- Music Assistant shows the recognized metadata on the player and does not store it in its
+  library.
+
+## Settings
+
+| Setting | Meaning |
+|---|---|
+| **AudD API token** | Needed to identify new music. Optional if you only want local recognition. |
+| **Recognize all live audio sources** | On by default. Turn off to pick specific sources. |
+| **Audio sources to recognize** | The sources to listen to, when the option above is off. |
+| *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
+| *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
+| *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
+
+The defaults were tuned on a real turntable. Only change them if track changes are missed
+(raise the silence threshold) or detected inside quiet passages (lower it, or raise the
+minimum gap).
+
+## Limitations
+
+These are known and documented on purpose. Some are being worked on (see [ROADMAP.md](ROADMAP.md)).
+
+- **Records without silence between tracks** (DJ mixes, live albums, continuous sides,
+  crossfades) are **not handled well yet**. Without a gap the provider doesn't notice that the
+  track changed: the previous title stays on screen, and it may learn the next track under the
+  previous track's name. *Being worked on:* using the track length to detect the expected end
+  of a track.
+- **One long track** (for example a 20-minute classical piece) works: it is recognized once,
+  and learning stops after 10 minutes.
+- **The album shown is AudD's**, often a digital compilation rather than the LP you are
+  playing. Audio recognition identifies the recording, not your pressing. Using your own
+  record collection's metadata is on the roadmap.
+- **Recognition takes a little time.** Locally, about 12–40 seconds into a track. Via AudD,
+  usually 25–60 seconds, because AudD often doesn't recognize the first seconds (intro) of a
+  track.
+- **During silence the last track stays visible** until the next one is recognized. Music
+  Assistant has no way yet to withdraw it earlier.
+- **The time shown on the player** is the time since the source started, not the position
+  in the song.
+- **Artwork is best effort:** taken from Apple Music, Spotify or Deezer when AudD provides it.
+  Some recordings have none.
+- **Live audio sources only.** Radio streams without song info are not supported yet.
+
+## Troubleshooting
+
+The provider logs what it does and why at INFO level, in the Music Assistant log:
+
+| Log line | Meaning |
+|---|---|
+| `Passage … started` | Music started after silence; a new track is being listened to. |
+| `Track boundary: … dBFS for 2.0s` | A silence gap was detected: track change, or the record ended. |
+| `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
+| `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
+| `AudD attempt n/8` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
+| `Learned … references` | Fingerprints stored for future local recognition. |
+| `No AudD API token configured` | Only local recognition is possible. |
+
+If nothing is recognized, check that the source allows audio analysis, that the provider
+is enabled, and that music is above the silence threshold (the `audio resumed at … dBFS`
+log line shows the level).
+
+## Development
+
+See [CLAUDE.md](CLAUDE.md) for architecture, design decisions and the development
+workflow, and [ROADMAP.md](ROADMAP.md) for plans and known issues. Tests run without Music
+Assistant installed: `uv sync && uv run pytest`.
