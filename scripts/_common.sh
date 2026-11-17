@@ -16,8 +16,10 @@ HA_SSH_PORT="${HA_SSH_PORT:-22}"
 REMOTE_SRC="${REMOTE_SRC:-/share/music-assistant-audd-local-recognizer}"
 # Container name of the Music Assistant Nightly add-on. Empty = auto-detect.
 MA_CONTAINER="${MA_CONTAINER:-}"
-# How docker is invoked on the host (e.g. "sudo docker" if needed).
+# How docker is invoked on the host (e.g. "sudo -n docker" if needed).
 DOCKER="${DOCKER:-docker}"
+# Prefix for writing to /share on the host (e.g. "sudo -n" when /share is root-owned).
+REMOTE_SUDO="${REMOTE_SUDO:-}"
 # MA data dir inside the container (mass.storage_path); the add-on uses /data.
 MA_DATA_DIR="${MA_DATA_DIR:-/data}"
 PACKAGE="audd_local_recognizer"

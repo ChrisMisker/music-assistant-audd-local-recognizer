@@ -50,8 +50,9 @@ log "Syncing source to $HA_HOST:$REMOTE_SRC"
 COPYFILE_DISABLE=1 tar -czf - \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '*.sqlite3*' \
   "$PACKAGE" scripts tests pyproject.toml README.md CLAUDE.md \
-  | remote "mkdir -p '$REMOTE_SRC' && rm -rf '$REMOTE_SRC/$PACKAGE' && tar -xzf - -C '$REMOTE_SRC' \
-      && echo '$VERSION $COMMIT$DIRTY' > '$REMOTE_SRC/DEPLOYED_VERSION'"
+  | remote "$REMOTE_SUDO mkdir -p '$REMOTE_SRC' && $REMOTE_SUDO rm -rf '$REMOTE_SRC/$PACKAGE' \
+      && $REMOTE_SUDO tar -xzf - -o -C '$REMOTE_SRC' \
+      && echo '$VERSION $COMMIT$DIRTY' | $REMOTE_SUDO tee '$REMOTE_SRC/DEPLOYED_VERSION' >/dev/null"
 
 log "Installing provider into the container"
 [[ "$PROVIDER_DEST" == */music_assistant/providers/$PACKAGE ]] || die "refusing dest $PROVIDER_DEST"
