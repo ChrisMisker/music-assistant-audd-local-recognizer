@@ -1,0 +1,13 @@
+{
+  "type": "audio_analysis",
+  "domain": "audd_local_recognizer",
+  "stage": "experimental",
+  "name": "Audio Recognizer: AudD + Local Fingerprints",
+  "description": "Recognizes music from live AudioSources using AudD and learns local Panako fingerprints for future local recognition.",
+  "codeowners": ["@ChrisMisker"],
+  "requirements": [
+    "audalign==1.3.2"
+  ],
+  "documentation": "https://github.com/ChrisMisker/music-assistant-audd-local-recognizer#readme",
+  "multi_instance": false
+}
