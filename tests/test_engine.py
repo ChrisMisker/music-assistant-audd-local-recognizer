@@ -1,0 +1,301 @@
+"""State-machine tests for RecognitionEngine (simulated acceptance tests A-H and more)."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+import pytest
+
+from audd_local_recognizer import engine as eng
+from audd_local_recognizer.audd_client import AudDError
+from audd_local_recognizer.engine import (
+    Decision,
+    GapDetector,
+    GapEvent,
+    GapSettings,
+    MatchConfirmer,
+)
+from audd_local_recognizer.fingerprints import QueryMatch
+from conftest import music, silence
+
+GAP = 3  # seconds of silence between tracks (min gap is 2 s)
+
+
+def songs_in(window: list[int]) -> set[int]:
+    return {c // 1000 for c in window if c}
+
+
+def local_hits(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("LOCAL HIT")]
+
+
+# ---------------------------------------------------------------- pure pieces
+
+
+def test_gap_detector_hysteresis() -> None:
+    gap = GapDetector(GapSettings(silence_dbfs=-45, resume_dbfs=-35, min_gap_seconds=2))
+    assert gap.update(-60, 1) is None
+    assert gap.update(-60, 1) is GapEvent.GAP
+    assert gap.update(-60, 1) is None  # already in gap
+    assert gap.update(-40, 1) is None  # between thresholds: still a gap
+    assert gap.in_gap
+    assert gap.update(-30, 1) is GapEvent.RESUME
+    # a short dip below the threshold is not a gap
+    assert gap.update(-60, 1) is None
+    assert gap.update(-40, 1) is None  # quiet moment resets the silence counter
+    assert gap.update(-60, 1) is None
+    assert not gap.in_gap
+
+
+def _candidate(track: int, votes: int, ratio: float) -> QueryMatch:
+    return QueryMatch(track, 1, "p" * 32, votes, 0, votes, ratio)
+
+
+def test_match_confirmer_rules() -> None:
+    confirmer = MatchConfirmer()
+    assert confirmer.consider(_candidate(1, 5, 0.6)) is Decision.ACCEPT_STRONG
+    assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.PENDING
+    assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.ACCEPT_CONFIRMED
+    # a different track restarts the run
+    assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.PENDING
+    assert confirmer.consider(_candidate(2, 3, 0.6)) is Decision.PENDING
+    # random collisions (0-1 votes) never identify, and break the run
+    assert confirmer.consider(_candidate(2, 1, 1.0)) is Decision.REJECT
+    assert confirmer.consider(_candidate(2, 3, 0.6)) is Decision.PENDING
+    # low ratio is rejected even with many votes
+    assert confirmer.consider(_candidate(3, 50, 0.3)) is Decision.REJECT
+
+
+# ---------------------------------------------------------------- acceptance A-H
+
+
+async def test_a_first_unknown_track_learns_without_self_recognition(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    assert len(h.audd_calls) == 1
+    assert [m["title"] for m in h.published] == ["Song 1"]
+    refs = h.references()
+    assert len(refs) >= 8  # AudD window + one every 6 s
+    assert {p for _, p in refs} == {h.engine.passage.id}
+    assert local_hits(caplog) == []
+    # identified passages only learn: one lookup window, every other window was learned
+    assert len(h.windows) == len(refs)
+
+
+async def test_b_track_transition_is_a_hard_boundary(make_harness: Any) -> None:
+    h = make_harness()
+    await h.play(1, 30)
+    first_passage = h.engine.passage
+    await h.quiet(GAP)
+    assert h.engine.passage is None
+    await h.play(2, 30)
+    assert h.engine.passage is not first_passage
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 2"]
+    for window in h.windows:
+        assert len(songs_in(window)) == 1, window  # never two songs in one window
+    for window in h.windows:
+        if songs_in(window) == {2}:
+            assert 0 not in window  # no pre-boundary silence either
+    # the AudD sample for song 2 is pure song 2
+    assert songs_in(h.audd_calls[-1]) == {2}
+    # song 2 is learned under its own track, in its own passage
+    refs = h.references()
+    assert {t for t, p in refs if p == h.engine.passage.id} == {2}
+
+
+async def test_c_audd_miss_then_retry_in_same_passage(make_harness: Any) -> None:
+    h = make_harness(audd_script=[None, None])
+    await h.play(1, 80)
+    # attempts at 12 s, 42 s (both scripted misses) and 72 s (hit)
+    assert len(h.audd_calls) == 3
+    assert [m["title"] for m in h.published] == ["Song 1"]
+
+
+async def test_c_previous_identity_never_blocks_next_track(make_harness: Any) -> None:
+    """Regression: an identified track A must not suppress AudD for track B (stale last_key)."""
+    h = make_harness()
+    await h.play(1, 40)
+    await h.quiet(GAP)
+    h.audd_script = [None]
+    await h.play(2, 80)
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 2"]
+    assert len(h.audd_calls) == 3  # A, B miss, B hit
+
+
+async def test_d_replay_in_same_stream_matches_earlier_passage(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    passage_a = h.engine.passage.id
+    await h.quiet(GAP)
+    await h.play(2, 40)
+    await h.quiet(GAP)
+    await h.play(1, 40)
+    assert len(h.audd_calls) == 2  # song 1 and song 2 once each; the replay is local
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 2", "Song 1"]
+    hits = local_hits(caplog)
+    assert len(hits) == 1
+    assert f"ref_passage={passage_a[:8]}" in hits[0]
+
+
+async def test_e_persistence_across_restart(make_harness: Any) -> None:
+    first = make_harness()
+    await first.play(1, 60)
+    first.engine.close()
+    # new engine + new database object on the same file = MA restart
+    second = make_harness()
+    await second.play(1, 30)
+    assert second.audd_calls == []
+    assert [m["title"] for m in second.published] == ["Song 1"]
+
+
+async def test_f_idle_source_does_nothing(make_harness: Any) -> None:
+    h = make_harness()
+    await h.quiet(120)
+    assert h.windows == []
+    assert h.audd_calls == []
+    assert h.published == []
+    assert h.engine.passage is None
+
+
+async def test_g_late_fingerprint_result_is_discarded(make_harness: Any) -> None:
+    gate = asyncio.Event()
+    h = make_harness(fingerprint_gate=gate)
+    for second in range(12):
+        h.engine.feed(music(1, second))
+    late = h.engine.task
+    assert late is not None and not late.done()
+    for _ in range(GAP):
+        h.engine.feed(silence())
+    for second in range(5):
+        h.engine.feed(music(2, second))
+    new_passage = h.engine.passage
+    gate.set()
+    await asyncio.wait_for(late, 5)
+    assert h.audd_calls == []
+    assert h.published == []
+    assert h.references() == []
+    assert h.engine.passage is new_passage
+    assert not new_passage.identified
+
+
+async def test_g_late_audd_result_is_discarded(make_harness: Any) -> None:
+    gate = asyncio.Event()
+    h = make_harness(audd_gate=gate)
+    for second in range(12):
+        h.engine.feed(music(1, second))
+        await asyncio.sleep(0)
+    late = h.engine.task
+    await asyncio.sleep(0)
+    assert len(h.audd_calls) == 1  # waiting on AudD
+    for _ in range(GAP):
+        h.engine.feed(silence())
+    h.engine.feed(music(2, 0))
+    gate.set()
+    await asyncio.wait_for(late, 5)
+    assert h.published == []
+    assert h.references() == []
+    assert h.db.stats().tracks == 0
+    assert not h.engine.passage.identified
+
+
+async def test_h_different_track_is_not_a_false_local_hit(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    await h.play(3, 30)
+    assert local_hits(caplog) == []
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 3"]
+    assert len(h.audd_calls) == 2
+
+
+# ---------------------------------------------------------------- AudD scheduling
+
+
+async def test_audd_cadence_and_cap_for_unknown_passage(make_harness: Any) -> None:
+    h = make_harness(audd_known=set())
+    await h.play(9, 1000)
+    # 12, 42, 72 (30 s apart), then every 90 s, capped at 8 attempts per passage
+    assert len(h.audd_calls) == eng.AUDD_MAX_ATTEMPTS_PER_PASSAGE
+    starts = [c[0] % 1000 for c in h.audd_calls]
+    assert starts[:4] == [0, 30, 60, 150]
+
+
+async def test_audd_cadence_resets_for_new_passage(make_harness: Any) -> None:
+    h = make_harness(audd_known=set())
+    await h.play(9, 200)  # 4 attempts, now on the slow cadence
+    await h.quiet(GAP)
+    h.audd_known = {2}
+    calls_before = len(h.audd_calls)
+    await h.play(2, 20)
+    assert len(h.audd_calls) == calls_before + 1
+    assert h.published[-1]["title"] == "Song 2"
+
+
+async def test_error_300_style_no_match_does_not_back_off(make_harness: Any) -> None:
+    h = make_harness(audd_known=set())
+    await h.play(9, 50)
+    assert len(h.audd_calls) == 2
+    assert h.engine.audd_backoff_seconds == 0
+
+
+async def test_real_audd_failure_backs_off(make_harness: Any) -> None:
+    h = make_harness(audd_script=[AudDError("AudD HTTP 500")] * 3)
+    await h.play(1, 100)
+    # 12 s fails -> blocked 60 s; 72 s fails -> blocked 120 s
+    assert len(h.audd_calls) == 2
+    assert h.engine.audd_backoff_seconds == 120
+    assert h.published == []
+
+
+async def test_no_token_recognizes_known_tracks_only(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    learner = make_harness()
+    await learner.play(1, 60)
+    learner.engine.close()
+    caplog.set_level(logging.WARNING)
+    h = make_harness(has_token=False)
+    await h.play(3, 30)  # unknown: cannot be identified, warned once
+    await h.quiet(GAP)
+    await h.play(1, 20)  # known: recognized locally
+    assert h.audd_calls == []
+    assert [m["title"] for m in h.published] == ["Song 1"]
+    assert sum("No AudD API token" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_declined_metadata_stops_recognition(make_harness: Any) -> None:
+    h = make_harness(publish_result=False)
+    await h.play(1, 60)
+    assert h.engine.stopped
+    assert len(h.published) == 1
+    assert h.references() == []
+
+
+async def test_learning_stops_after_cap(make_harness: Any, monkeypatch: Any) -> None:
+    monkeypatch.setattr(eng, "MAX_LEARN_SECONDS_PER_PASSAGE", 40)
+    h = make_harness()
+    await h.play(1, 120)
+    assert len(h.references()) == 5  # AudD window + learns at 18, 24, 30, 36 s
+
+
+async def test_close_cancels_running_task(make_harness: Any) -> None:
+    h = make_harness(fingerprint_gate=asyncio.Event())
+    for second in range(12):
+        h.engine.feed(music(1, second))
+    task = h.engine.task
+    h.engine.close()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    h.engine.feed(music(1, 12))  # ignored after close
+    assert h.engine.passage is None

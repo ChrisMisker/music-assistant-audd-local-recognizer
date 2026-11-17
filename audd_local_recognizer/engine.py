@@ -1,0 +1,501 @@
+"""Recognition state machine for one live stream, independent of Music Assistant.
+
+Model
+-----
+A *stream* (one MA analysis session) is a sequence of *passages*: continuous pieces of
+music between confirmed silence gaps. An MA session is NOT a track; a whole record side
+(or several) can play in one session.
+
+    GAP  --audio resumes-->  PASSAGE(unidentified) --local hit / AudD hit--> PASSAGE(identified)
+     ^                                  |                                          |
+     +---------- confirmed gap ---------+------------------------------------------+
+
+Invariants
+----------
+* A confirmed gap is a hard PCM boundary: no window ever mixes audio from two passages.
+* A passage never matches references it learned itself (exclude_passage_id), but references
+  from every earlier passage, including earlier in the same session, are eligible.
+* An identified passage only learns; it does not keep matching.
+* Every async task captures its Passage object and re-checks `self.passage is passage`
+  before any state change, metadata report or DB write, so a late result from passage N
+  can never touch passage N+1.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum, StrEnum
+from typing import TYPE_CHECKING, Any
+
+from .audd_client import AudDError
+from .fingerprints import Fingerprints, PcmFormat, QueryMatch, pcm_dbfs, pcm_to_wav
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Awaitable, Callable, Coroutine
+
+    from .database import FingerprintDatabase
+
+# Window and cadence (seconds of passage audio).
+SAMPLE_SECONDS = 12
+LOCAL_INTERVAL_SECONDS = 6
+LEARN_INTERVAL_SECONDS = 6  # 12 s windows every 6 s: overlap is intentional (replay coverage)
+# Stop learning a passage after this long. Guards against learning the next track under
+# the current identity on records without audible gaps between tracks.
+MAX_LEARN_SECONDS_PER_PASSAGE = 600
+
+# AudD cadence per unknown passage: 30 s between the first attempts, then 90 s, capped.
+AUDD_FAST_ATTEMPTS = 3
+AUDD_FAST_INTERVAL_SECONDS = 30
+AUDD_SLOW_INTERVAL_SECONDS = 90
+AUDD_MAX_ATTEMPTS_PER_PASSAGE = 8
+# Stream-wide: never two AudD calls closer than this, whatever the passages do.
+AUDD_MIN_INTERVAL_SECONDS = 30
+# Stream-wide exponential backoff, only for real HTTP/network/API failures.
+AUDD_INITIAL_BACKOFF_SECONDS = 60
+AUDD_MAX_BACKOFF_SECONDS = 900
+
+# Local match acceptance. A strong candidate identifies at once; a credible one must be the
+# same track on consecutive attempts. Random collisions give 0-1 votes.
+STRONG_VOTES = 5
+STRONG_RATIO = 0.60
+CONFIRM_VOTES = 3
+CONFIRM_RATIO = 0.60
+CONFIRMATIONS_REQUIRED = 2
+
+
+@dataclass(frozen=True)
+class GapSettings:
+    """Silence detection thresholds (validated on the real Sendspin turntable setup)."""
+
+    silence_dbfs: float = -45.0
+    resume_dbfs: float = -35.0
+    min_gap_seconds: float = 2.0
+
+
+class GapEvent(Enum):
+    """Transition reported by GapDetector."""
+
+    GAP = "gap"
+    RESUME = "resume"
+
+
+class GapDetector:
+    """Hysteresis silence detector over chunk levels."""
+
+    def __init__(self, settings: GapSettings) -> None:
+        """Start outside a gap."""
+        self.settings = settings
+        self.in_gap = False
+        self.silence_seconds = 0.0
+
+    def update(self, level_dbfs: float, chunk_seconds: float) -> GapEvent | None:
+        """Feed one chunk level; return a transition if one happened."""
+        if level_dbfs <= self.settings.silence_dbfs:
+            self.silence_seconds += chunk_seconds
+            if not self.in_gap and self.silence_seconds >= self.settings.min_gap_seconds:
+                self.in_gap = True
+                return GapEvent.GAP
+            return None
+        if level_dbfs >= self.settings.resume_dbfs:
+            self.silence_seconds = 0.0
+            if self.in_gap:
+                self.in_gap = False
+                return GapEvent.RESUME
+        elif not self.in_gap:
+            # In-between level while playing: a quiet moment, not silence.
+            self.silence_seconds = 0.0
+        return None
+
+
+class Decision(StrEnum):
+    """Outcome of judging a local candidate."""
+
+    ACCEPT_STRONG = "accepted (strong)"
+    ACCEPT_CONFIRMED = "accepted (confirmed)"
+    PENDING = "pending confirmation"
+    REJECT = "rejected"
+
+
+@dataclass
+class MatchConfirmer:
+    """Decide whether local candidates identify a track."""
+
+    pending_track_id: int | None = None
+    pending_count: int = 0
+
+    def reset(self) -> None:
+        """Forget any pending candidate (a miss breaks a consecutive run)."""
+        self.pending_track_id = None
+        self.pending_count = 0
+
+    def consider(self, candidate: QueryMatch) -> Decision:
+        """Judge one candidate."""
+        if candidate.best_votes >= STRONG_VOTES and candidate.ratio >= STRONG_RATIO:
+            self.reset()
+            return Decision.ACCEPT_STRONG
+        if candidate.best_votes >= CONFIRM_VOTES and candidate.ratio >= CONFIRM_RATIO:
+            if self.pending_track_id == candidate.track_id:
+                self.pending_count += 1
+            else:
+                self.pending_track_id = candidate.track_id
+                self.pending_count = 1
+            if self.pending_count >= CONFIRMATIONS_REQUIRED:
+                self.reset()
+                return Decision.ACCEPT_CONFIRMED
+            return Decision.PENDING
+        self.reset()
+        return Decision.REJECT
+
+
+@dataclass(eq=False)
+class Passage:
+    """Active state of one continuous piece of music. Discarded at the next gap."""
+
+    window_bytes: int
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    pcm: bytearray = field(default_factory=bytearray)
+    seconds: float = 0.0  # fresh audio received in this passage
+    track_id: int | None = None
+    metadata: dict[str, Any] | None = None
+    confirmer: MatchConfirmer = field(default_factory=MatchConfirmer)
+    next_local_at: float = float(SAMPLE_SECONDS)
+    next_learn_at: float = 0.0
+    learning_capped: bool = False
+    audd_attempts: int = 0
+    next_audd_at: float = 0.0
+
+    @property
+    def short_id(self) -> str:
+        """Return a log-friendly prefix of the id."""
+        return self.id[:8]
+
+    @property
+    def identified(self) -> bool:
+        """Return whether this passage has been identified."""
+        return self.track_id is not None
+
+    @property
+    def window_ready(self) -> bool:
+        """Return whether a full window of this passage's own audio is buffered."""
+        return len(self.pcm) >= self.window_bytes
+
+    def append(self, chunk: bytes, chunk_seconds: float) -> None:
+        """Append audio, keeping only the newest window."""
+        self.seconds += chunk_seconds
+        self.pcm.extend(chunk)
+        if (excess := len(self.pcm) - self.window_bytes) > 0:
+            del self.pcm[:excess]
+
+
+def describe(metadata: dict[str, Any] | None) -> str:
+    """Return 'Artist - Title' for logs."""
+    if not metadata:
+        return "<unknown>"
+    return f"{metadata.get('artist')} - {metadata.get('title')}"
+
+
+class RecognitionEngine:
+    """Gap/passage state machine plus recognition and learning for one stream.
+
+    Dependencies are injected so the engine can be tested without Music Assistant:
+    - fingerprint: async PCM window -> density-reduced hashes (CPU work offloaded)
+    - db: FingerprintDatabase (called through run_blocking)
+    - audd: async WAV -> metadata | None, raising AudDError on failure; None if no token
+    - publish: report metadata to MA; False means stop recognizing this stream
+    - spawn: start a background task
+    """
+
+    def __init__(
+        self,
+        *,
+        fmt: PcmFormat,
+        gap_settings: GapSettings,
+        fingerprint: Callable[[bytes], Awaitable[Fingerprints]],
+        db: FingerprintDatabase,
+        audd: Callable[[bytes], Awaitable[dict[str, Any] | None]] | None,
+        publish: Callable[[dict[str, Any]], bool],
+        spawn: Callable[[Coroutine[Any, Any, None]], asyncio.Task[None]],
+        logger: logging.Logger,
+        run_blocking: Callable[..., Awaitable[Any]] = asyncio.to_thread,
+    ) -> None:
+        """Create the engine; the stream starts inside a passage."""
+        self.fmt = fmt
+        self.gap = GapDetector(gap_settings)
+        self._fingerprint = fingerprint
+        self._db = db
+        self._audd = audd
+        self._publish = publish
+        self._spawn = spawn
+        self._run_blocking = run_blocking
+        self.logger = logger
+        self.window_bytes = fmt.bytes_per_second * SAMPLE_SECONDS
+        self.stream_seconds = 0.0
+        self.stopped = False
+        self.task: asyncio.Task[None] | None = None
+        self.last_audd_at: float | None = None  # stream clock
+        self.audd_backoff_seconds = 0
+        self.audd_blocked_until = 0.0
+        self._warned_no_token = False
+        self.passage: Passage | None = None
+        # Start inside a passage so music already playing is recognized; an idle
+        # source simply closes it after min_gap_seconds without ever fingerprinting.
+        self._open_passage("stream started")
+
+    # ---------------------------------------------------------------- stream input
+
+    def feed(self, chunk: bytes) -> None:
+        """Process one PCM chunk. Never blocks; heavy work runs in a task."""
+        if self.stopped or not chunk:
+            return
+        chunk_seconds = len(chunk) / self.fmt.bytes_per_second
+        self.stream_seconds += chunk_seconds
+        # Classify the chunk BEFORE it is buffered: a gap must be a hard boundary.
+        level = pcm_dbfs(chunk, self.fmt)
+        event = self.gap.update(level, chunk_seconds)
+        if event is GapEvent.GAP:
+            self._close_passage(level)
+        elif event is GapEvent.RESUME:
+            self._open_passage(f"audio resumed at {level:.1f} dBFS")
+        if self.passage is None:
+            return  # inside a gap: no buffering, fingerprinting, matching or AudD
+        self.passage.append(chunk, chunk_seconds)
+        self._schedule(self.passage)
+
+    def close(self) -> None:
+        """Stop the stream and cancel in-flight work."""
+        self.stopped = True
+        self.passage = None
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    # ---------------------------------------------------------------- passages
+
+    def _open_passage(self, reason: str) -> None:
+        self.passage = Passage(window_bytes=self.window_bytes)
+        self.logger.info(
+            "Passage %s started (%s); first lookup after %ds of fresh audio",
+            self.passage.short_id,
+            reason,
+            SAMPLE_SECONDS,
+        )
+
+    def _close_passage(self, level: float) -> None:
+        passage = self.passage
+        self.passage = None  # in-flight tasks for it now discard their results
+        if passage is None:
+            return
+        self.logger.info(
+            "Track boundary: %.1f dBFS for %.1fs; passage %s closed after %.0fs (%s)",
+            level,
+            self.gap.silence_seconds,
+            passage.short_id,
+            passage.seconds,
+            describe(passage.metadata) if passage.identified else "unidentified",
+        )
+
+    def _is_current(self, passage: Passage) -> bool:
+        return not self.stopped and self.passage is passage
+
+    # ---------------------------------------------------------------- scheduling
+
+    def _schedule(self, passage: Passage) -> None:
+        if self.task is not None and not self.task.done():
+            return
+        if not passage.window_ready:
+            return
+        if passage.identified:
+            if passage.seconds < passage.next_learn_at or passage.learning_capped:
+                return
+            if passage.seconds > MAX_LEARN_SECONDS_PER_PASSAGE:
+                passage.learning_capped = True
+                self.logger.info(
+                    "Passage %s: stopped learning after %ds",
+                    passage.short_id,
+                    MAX_LEARN_SECONDS_PER_PASSAGE,
+                )
+                return
+            passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
+            self.task = self._spawn(self._learn(passage, bytes(passage.pcm), passage.seconds))
+            return
+        if passage.seconds >= passage.next_local_at:
+            passage.next_local_at = passage.seconds + LOCAL_INTERVAL_SECONDS
+            self.task = self._spawn(self._recognize(passage, bytes(passage.pcm), passage.seconds))
+
+    # ---------------------------------------------------------------- recognition
+
+    async def _recognize(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+        try:
+            query = await self._fingerprint(pcm)
+            if not self._is_current(passage):
+                return
+            local = await self._run_blocking(self._db.find_best_match, query, passage.id)
+            if not self._is_current(passage):
+                return
+            if self._judge_local(passage, local):
+                return
+            metadata = await self._try_audd(passage, pcm)
+            if metadata is None or not self._is_current(passage):
+                return
+            track_id = await self._run_blocking(self._db.upsert_track, metadata)
+            if not self._is_current(passage):
+                return
+            self.logger.info(
+                "AudD HIT: %s (passage %s, attempt %d)",
+                describe(metadata),
+                passage.short_id,
+                passage.audd_attempts,
+            )
+            self._identify(passage, track_id, metadata)
+            # Learn the exact window AudD just identified.
+            await self._store_reference(passage, query, window_end)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception("Recognition failed (passage %s)", passage.short_id)
+
+    def _judge_local(
+        self, passage: Passage, local: tuple[QueryMatch, dict[str, Any]] | None
+    ) -> bool:
+        """Apply the confirmation rules; return True if the passage got identified."""
+        if local is None:
+            passage.confirmer.reset()
+            self.logger.info("LOCAL MISS: no candidate (passage %s)", passage.short_id)
+            return False
+        candidate, metadata = local
+        decision = passage.confirmer.consider(candidate)
+        accepted = decision in (Decision.ACCEPT_STRONG, Decision.ACCEPT_CONFIRMED)
+        self.logger.info(
+            "LOCAL %s: %s votes=%d ratio=%.3f shared=%d ref=%d offset=%+d "
+            "ref_passage=%s -> %s (passage %s)",
+            "HIT" if accepted else "CANDIDATE",
+            describe(metadata),
+            candidate.best_votes,
+            candidate.ratio,
+            candidate.shared_hashes,
+            candidate.reference_id,
+            candidate.best_offset,
+            candidate.reference_passage_id[:8],
+            decision.value,
+            passage.short_id,
+        )
+        if accepted:
+            self._identify(passage, candidate.track_id, metadata)
+            return True
+        return False
+
+    def _audd_wait_reason(self, passage: Passage) -> str | None:
+        """Return why AudD may not be called now, or None if it may."""
+        if passage.audd_attempts >= AUDD_MAX_ATTEMPTS_PER_PASSAGE:
+            return f"attempt limit ({AUDD_MAX_ATTEMPTS_PER_PASSAGE}) reached for this passage"
+        if passage.seconds < passage.next_audd_at:
+            return f"next passage attempt at {passage.next_audd_at:.0f}s"
+        if self.stream_seconds < self.audd_blocked_until:
+            return f"error backoff ({self.audd_backoff_seconds}s)"
+        if (
+            self.last_audd_at is not None
+            and self.stream_seconds - self.last_audd_at < AUDD_MIN_INTERVAL_SECONDS
+        ):
+            return "stream-wide minimum interval"
+        return None
+
+    async def _try_audd(self, passage: Passage, pcm: bytes) -> dict[str, Any] | None:
+        if self._audd is None:
+            if not self._warned_no_token:
+                self._warned_no_token = True
+                self.logger.warning(
+                    "No AudD API token configured: unknown tracks cannot be identified "
+                    "or learned; only previously learned tracks are recognized"
+                )
+            return None
+        if (reason := self._audd_wait_reason(passage)) is not None:
+            self.logger.debug("AudD skipped (passage %s): %s", passage.short_id, reason)
+            return None
+        passage.audd_attempts += 1
+        interval = (
+            AUDD_FAST_INTERVAL_SECONDS
+            if passage.audd_attempts < AUDD_FAST_ATTEMPTS
+            else AUDD_SLOW_INTERVAL_SECONDS
+        )
+        passage.next_audd_at = passage.seconds + interval
+        self.last_audd_at = self.stream_seconds
+        self.logger.info(
+            "AudD attempt %d/%d on %ds sample (passage %s)",
+            passage.audd_attempts,
+            AUDD_MAX_ATTEMPTS_PER_PASSAGE,
+            SAMPLE_SECONDS,
+            passage.short_id,
+        )
+        try:
+            wav = pcm_to_wav(pcm, self.fmt)
+            metadata = await self._audd(wav)
+        except asyncio.CancelledError:
+            raise
+        except AudDError as err:
+            self._register_audd_failure(str(err))
+            return None
+        except Exception as err:
+            self._register_audd_failure(f"{type(err).__name__}: {err}")
+            return None
+        self.audd_backoff_seconds = 0
+        self.audd_blocked_until = 0.0
+        if metadata is None:
+            self.logger.info("AudD: no match (passage %s); retrying later", passage.short_id)
+        return metadata
+
+    def _register_audd_failure(self, reason: str) -> None:
+        self.audd_backoff_seconds = (
+            AUDD_INITIAL_BACKOFF_SECONDS
+            if self.audd_backoff_seconds <= 0
+            else min(self.audd_backoff_seconds * 2, AUDD_MAX_BACKOFF_SECONDS)
+        )
+        self.audd_blocked_until = self.stream_seconds + self.audd_backoff_seconds
+        self.logger.warning("AudD failed: %s; backing off %ds", reason, self.audd_backoff_seconds)
+
+    def _identify(self, passage: Passage, track_id: int, metadata: dict[str, Any]) -> None:
+        """Mark the passage identified, report metadata and start learning."""
+        passage.track_id = track_id
+        passage.metadata = metadata
+        passage.confirmer.reset()
+        passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
+        if self._publish(metadata):
+            self.logger.info("Reported stream metadata: %s", describe(metadata))
+        else:
+            # MA declined: the source has metadata of its own, or the session is gone.
+            self.logger.info("Music Assistant declined our metadata; recognition stopped")
+            self.stopped = True
+
+    # ---------------------------------------------------------------- learning
+
+    async def _learn(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+        try:
+            hashes = await self._fingerprint(pcm)
+            await self._store_reference(passage, hashes, window_end)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception("Could not learn window (passage %s)", passage.short_id)
+
+    async def _store_reference(
+        self, passage: Passage, hashes: Fingerprints, window_end: float
+    ) -> None:
+        if not self._is_current(passage) or passage.track_id is None:
+            return
+        reference_id, count = await self._run_blocking(
+            self._db.add_reference,
+            passage.track_id,
+            passage.id,
+            max(0.0, window_end - SAMPLE_SECONDS),
+            hashes,
+        )
+        if reference_id:
+            self.logger.info(
+                "Learned local reference: %s passage=%s ref=%d landmarks=%d at=%.0fs",
+                describe(passage.metadata),
+                passage.short_id,
+                reference_id,
+                count,
+                window_end - SAMPLE_SECONDS,
+            )

@@ -1,66 +1,145 @@
-"""Minimal AudD standard-recognition client."""
+"""Minimal AudD standard-recognition client (no SDK dependency).
+
+Product boundary: AudD only identifies unknown audio. We never store, imitate or
+reverse-engineer AudD fingerprints; local fingerprints are our own Panako hashes.
+"""
+
 from __future__ import annotations
 
 from typing import Any
-import logging
 
 import aiohttp
 
 AUDD_URL = "https://api.audd.io/"
-LOGGER = logging.getLogger(__name__)
+AUDD_RETURN = "apple_music,spotify,deezer"
+AUDD_TIMEOUT_SECONDS = 20
+ARTWORK_SIZE = 600
+
+# AudD error 300: no usable fingerprint could be made from the audio (silence, noise).
+# That is a normal no-match, not an API failure.
+AUDD_NO_FINGERPRINT_ERROR = 300
+
+
+class AudDError(Exception):
+    """A real AudD/HTTP/network failure. Messages never contain the API token."""
+
+
+def _str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _apple_artwork(result: dict[str, Any]) -> str | None:
+    apple = result.get("apple_music")
+    if not isinstance(apple, dict) or not isinstance(apple.get("artwork"), dict):
+        return None
+    url = _str(apple["artwork"].get("url"))
+    if url is None:
+        return None
+    return url.replace("{w}", str(ARTWORK_SIZE)).replace("{h}", str(ARTWORK_SIZE))
+
+
+def _spotify_artwork(result: dict[str, Any]) -> str | None:
+    spotify = result.get("spotify")
+    album = spotify.get("album") if isinstance(spotify, dict) else None
+    images = album.get("images") if isinstance(album, dict) else None
+    if not isinstance(images, list):
+        return None
+    candidates = [img for img in images if isinstance(img, dict) and _str(img.get("url"))]
+    if not candidates:
+        return None
+    # Spotify lists largest first; prefer the largest explicitly anyway.
+    best = max(candidates, key=lambda img: int(img.get("width") or 0))
+    return str(best["url"])
+
+
+def _deezer_artwork(result: dict[str, Any]) -> str | None:
+    deezer = result.get("deezer")
+    album = deezer.get("album") if isinstance(deezer, dict) else None
+    if not isinstance(album, dict):
+        return None
+    for key in ("cover_big", "cover_medium", "cover"):  # cover_big is ~500x500
+        if url := _str(album.get(key)):
+            return url
+    return None
+
+
+def pick_artwork(result: dict[str, Any]) -> str | None:
+    """Best-effort artwork: Apple Music, then Spotify, then Deezer, else None."""
+    return _apple_artwork(result) or _spotify_artwork(result) or _deezer_artwork(result)
+
+
+def parse_result(result: Any) -> dict[str, Any] | None:
+    """Turn an AudD `result` object into our metadata dict, or None if unusable."""
+    if not isinstance(result, dict):
+        return None
+    artist = _str(result.get("artist"))
+    title = _str(result.get("title"))
+    if artist is None or title is None:
+        return None
+    return {
+        "artist": artist,
+        "title": title,
+        "album": _str(result.get("album")),
+        "artwork": pick_artwork(result),
+        "uri": _str(result.get("song_link")),
+        "audd_timecode": _str(result.get("timecode")),
+    }
+
+
+def parse_response(payload: Any) -> dict[str, Any] | None:
+    """Interpret a full AudD JSON response.
+
+    Returns metadata on a match, None on a normal no-match (including error 300),
+    and raises AudDError on any real API error.
+    """
+    if not isinstance(payload, dict):
+        msg = "AudD returned a non-object response"
+        raise AudDError(msg)
+    if payload.get("status") == "success":
+        return parse_result(payload.get("result"))
+    error = payload.get("error")
+    code = error.get("error_code") if isinstance(error, dict) else None
+    if code == AUDD_NO_FINGERPRINT_ERROR:
+        return None
+    message = error.get("error_message") if isinstance(error, dict) else None
+    # Only the code and AudD's message: the payload may echo request params (the token).
+    msg = f"AudD error {code}: {message}"
+    raise AudDError(msg)
 
 
 class AudDClient:
-    """Call AudD without an extra SDK dependency."""
+    """Call AudD's standard recognition endpoint."""
 
     def __init__(self, session: aiohttp.ClientSession, api_token: str) -> None:
-        self.session = session
-        self.api_token = api_token
+        """Initialize with a shared aiohttp session and the (secret) API token."""
+        self._session = session
+        self._api_token = api_token
+
+    def __repr__(self) -> str:
+        """Never expose the token, even in debug output."""
+        return "AudDClient(api_token=***)"
 
     async def recognize(self, wav_bytes: bytes) -> dict[str, Any] | None:
+        """Recognize a WAV sample. None means no match; AudDError means failure."""
         form = aiohttp.FormData()
-        form.add_field("api_token", self.api_token)
-        form.add_field("return", "apple_music,spotify,deezer")
+        form.add_field("api_token", self._api_token)
+        form.add_field("return", AUDD_RETURN)
         form.add_field("file", wav_bytes, filename="sample.wav", content_type="audio/wav")
-        async with self.session.post(AUDD_URL, data=form, timeout=aiohttp.ClientTimeout(total=20)) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(f"AudD HTTP {response.status}: {payload}")
-        if payload.get("status") != "success":
-            error = payload.get("error") or payload
-
-            # AudD error 300 means the supplied audio could not produce
-            # a usable fingerprint. This is expected for silence, noise,
-            # or otherwise unrecognizable audio and is therefore a normal
-            # no-match rather than an API/network failure.
-            if isinstance(error, dict) and error.get("error_code") == 300:
-                return None
-
-            raise RuntimeError(f"AudD error: {error}")
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            return None
-
-        # Temporary v0.5 diagnostic: inspect AudD metadata returned for a
-        # successful recognition. The API token/request is never logged.
-        LOGGER.info("AUDD RAW RESULT: %s", result)
-        artist = result.get("artist")
-        title = result.get("title")
-        if not artist or not title:
-            return None
-        artwork = None
-        apple = result.get("apple_music")
-        if isinstance(apple, dict):
-            artwork_data = apple.get("artwork")
-            if isinstance(artwork_data, dict):
-                artwork = artwork_data.get("url")
-                if isinstance(artwork, str):
-                    artwork = artwork.replace("{w}", "600").replace("{h}", "600")
-        return {
-            "artist": str(artist),
-            "title": str(title),
-            "album": result.get("album"),
-            "artwork": artwork,
-            "uri": result.get("song_link"),
-            "audd_timecode": result.get("timecode"),
-        }
+        try:
+            async with self._session.post(
+                AUDD_URL,
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=AUDD_TIMEOUT_SECONDS),
+            ) as response:
+                if response.status >= 400:
+                    msg = f"AudD HTTP {response.status}"
+                    raise AudDError(msg)
+                try:
+                    payload = await response.json(content_type=None)
+                except ValueError as err:
+                    msg = f"AudD returned invalid JSON (HTTP {response.status})"
+                    raise AudDError(msg) from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            msg = f"AudD request failed: {type(err).__name__}"
+            raise AudDError(msg) from err
+        return parse_response(payload)

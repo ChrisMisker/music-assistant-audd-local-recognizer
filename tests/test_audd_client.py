@@ -1,0 +1,145 @@
+"""AudD response parsing, artwork fallbacks and token safety."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from audd_local_recognizer.audd_client import (
+    AudDClient,
+    AudDError,
+    parse_response,
+    pick_artwork,
+)
+
+TOKEN = "secret-token-123"
+
+APPLE = {"artwork": {"url": "https://apple/{w}x{h}bb.jpg"}}
+SPOTIFY = {
+    "album": {
+        "images": [
+            {"url": "https://spotify/64.jpg", "width": 64},
+            {"url": "https://spotify/640.jpg", "width": 640},
+        ]
+    }
+}
+DEEZER = {
+    "album": {
+        "cover": "https://deezer/cover",
+        "cover_medium": "https://deezer/250",
+        "cover_big": "https://deezer/500",
+        "cover_xl": "https://deezer/1000",
+    }
+}
+
+
+def _success(**extra: Any) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "result": {
+            "artist": "Nat King Cole",
+            "title": "Unforgettable",
+            "album": "20 Greatest Hits",
+            "song_link": "https://lis.tn/x",
+            "timecode": "00:12",
+            **extra,
+        },
+    }
+
+
+def test_success_is_parsed() -> None:
+    meta = parse_response(_success(deezer=DEEZER))
+    assert meta == {
+        "artist": "Nat King Cole",
+        "title": "Unforgettable",
+        "album": "20 Greatest Hits",
+        "artwork": "https://deezer/500",
+        "uri": "https://lis.tn/x",
+        "audd_timecode": "00:12",
+    }
+
+
+def test_artwork_priority() -> None:
+    both = {"apple_music": APPLE, "spotify": SPOTIFY, "deezer": DEEZER}
+    assert pick_artwork(both) == "https://apple/600x600bb.jpg"
+    assert pick_artwork({"spotify": SPOTIFY, "deezer": DEEZER}) == "https://spotify/640.jpg"
+    assert pick_artwork({"deezer": DEEZER}) == "https://deezer/500"
+    assert pick_artwork({"deezer": {"album": {"cover_medium": "m", "cover": "c"}}}) == "m"
+    assert pick_artwork({"deezer": {"album": {"cover": "c"}}}) == "c"
+    assert pick_artwork({}) is None
+    # malformed blocks fall through instead of crashing
+    assert pick_artwork({"apple_music": [], "spotify": {"album": {}}, "deezer": "x"}) is None
+
+
+def test_no_match_and_error_300_are_normal() -> None:
+    assert parse_response({"status": "success", "result": None}) is None
+    assert parse_response(_success(artist="")) is None
+    error_300 = {"status": "error", "error": {"error_code": 300, "error_message": "no fp"}}
+    assert parse_response(error_300) is None
+
+
+def test_real_errors_raise_without_echoing_request_params() -> None:
+    payload = {
+        "status": "error",
+        "error": {"error_code": 901, "error_message": "Recognition failed"},
+        "request_params": {"api_token": TOKEN},
+    }
+    with pytest.raises(AudDError) as err:
+        parse_response(payload)
+    assert "901" in str(err.value)
+    assert TOKEN not in str(err.value)
+    with pytest.raises(AudDError) as err:
+        parse_response({"status": "error", "request_params": {"api_token": TOKEN}})
+    assert TOKEN not in str(err.value)
+    with pytest.raises(AudDError):
+        parse_response(["not", "a", "dict"])
+
+
+class _FakeResponse:
+    def __init__(self, status: int, payload: Any) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def json(self, content_type: Any = None) -> Any:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+        self.posts = 0
+
+    def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.posts += 1
+        return self.response
+
+
+async def test_client_http_error_never_contains_token() -> None:
+    session = _FakeSession(_FakeResponse(500, {"request_params": {"api_token": TOKEN}}))
+    client = AudDClient(session, TOKEN)  # type: ignore[arg-type]
+    with pytest.raises(AudDError) as err:
+        await client.recognize(b"RIFF")
+    assert TOKEN not in str(err.value)
+    assert TOKEN not in repr(client)
+
+
+async def test_client_invalid_json_is_an_error() -> None:
+    client = AudDClient(_FakeSession(_FakeResponse(200, ValueError("html"))), TOKEN)  # type: ignore[arg-type]
+    with pytest.raises(AudDError, match="invalid JSON"):
+        await client.recognize(b"RIFF")
+
+
+async def test_client_success() -> None:
+    client = AudDClient(_FakeSession(_FakeResponse(200, _success())), TOKEN)  # type: ignore[arg-type]
+    meta = await client.recognize(b"RIFF")
+    assert meta is not None
+    assert meta["title"] == "Unforgettable"
