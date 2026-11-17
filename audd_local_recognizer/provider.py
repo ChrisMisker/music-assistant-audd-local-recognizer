@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 STORAGE_SUBDIR = "audd_local_recognizer"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"

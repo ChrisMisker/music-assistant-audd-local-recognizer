@@ -1,6 +1,6 @@
 [project]
 name = "music-assistant-audd-local-recognizer"
-version = "0.5.2"
+version = "0.5.3"
 description = "Music Assistant audio-analysis provider: AudD discovery + local Panako fingerprints"
 requires-python = ">=3.14"
 # Runtime requirements are declared in audd_local_recognizer/manifest.json (MA installs them).

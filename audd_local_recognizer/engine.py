@@ -15,7 +15,8 @@ Invariants
 * A confirmed gap is a hard PCM boundary: no window ever mixes audio from two passages.
 * A passage never matches references it learned itself (exclude_passage_id), but references
   from every earlier passage, including earlier in the same session, are eligible.
-* An identified passage only learns; it does not keep matching.
+* An identified passage only learns; it does not keep matching. The lookup windows it
+  computed while still unknown are stored too, so a track's start is learned as well.
 * Every async task captures its Passage object and re-checks `self.passage is passage`
   before any state change, metadata report or DB write, so a late result from passage N
   can never touch passage N+1.
@@ -45,8 +46,15 @@ LEARN_INTERVAL_SECONDS = 6  # 12 s windows every 6 s: overlap is intentional (re
 # Stop learning a passage after this long. Guards against learning the next track under
 # the current identity on records without audible gaps between tracks.
 MAX_LEARN_SECONDS_PER_PASSAGE = 600
+# Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
+# the first ~2 minutes) and stored as references once the passage is identified, so the
+# start of a track is learned too even when identification only succeeds later.
+MAX_EARLY_WINDOWS = 20
 
-# AudD cadence per unknown passage: 30 s between the first attempts, then 90 s, capped.
+# AudD cadence per unknown passage. The first attempt waits for 24 s of audio: in real vinyl
+# tests AudD missed the first 12 s (intro) of every track (6/6) and matched 30-42 s, while
+# local lookups still start at 12 s. Then 30 s between attempts, later 90 s, capped.
+AUDD_FIRST_ATTEMPT_SECONDS = 24
 AUDD_FAST_ATTEMPTS = 3
 AUDD_FAST_INTERVAL_SECONDS = 30
 AUDD_SLOW_INTERVAL_SECONDS = 90
@@ -165,7 +173,8 @@ class Passage:
     next_learn_at: float = 0.0
     learning_capped: bool = False
     audd_attempts: int = 0
-    next_audd_at: float = 0.0
+    next_audd_at: float = float(AUDD_FIRST_ATTEMPT_SECONDS)
+    early_windows: list[tuple[float, Fingerprints]] = field(default_factory=list)
 
     @property
     def short_id(self) -> str:
@@ -331,10 +340,13 @@ class RecognitionEngine:
             query = await self._fingerprint(pcm)
             if not self._is_current(passage):
                 return
+            if len(passage.early_windows) < MAX_EARLY_WINDOWS:
+                passage.early_windows.append((window_end, query))
             local = await self._run_blocking(self._db.find_best_match, query, passage.id)
             if not self._is_current(passage):
                 return
             if self._judge_local(passage, local):
+                await self._store_early_windows(passage)
                 return
             metadata = await self._try_audd(passage, pcm)
             if metadata is None or not self._is_current(passage):
@@ -349,8 +361,10 @@ class RecognitionEngine:
                 passage.audd_attempts,
             )
             self._identify(passage, track_id, metadata)
-            # Learn the exact window AudD just identified.
-            await self._store_reference(passage, query, window_end)
+            # Learn every lookup window of this passage, including the one AudD identified.
+            if not passage.early_windows or passage.early_windows[-1][0] != window_end:
+                passage.early_windows.append((window_end, query))
+            await self._store_early_windows(passage)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -362,7 +376,7 @@ class RecognitionEngine:
         """Apply the confirmation rules; return True if the passage got identified."""
         if local is None:
             passage.confirmer.reset()
-            self.logger.info("LOCAL MISS: no candidate (passage %s)", passage.short_id)
+            self.logger.debug("LOCAL MISS: no candidate (passage %s)", passage.short_id)
             return False
         candidate, metadata = local
         decision = passage.confirmer.consider(candidate)
@@ -477,6 +491,32 @@ class RecognitionEngine:
             raise
         except Exception:
             self.logger.exception("Could not learn window (passage %s)", passage.short_id)
+
+    async def _store_early_windows(self, passage: Passage) -> None:
+        """Store the lookup windows of a just-identified passage as references."""
+        windows, passage.early_windows = passage.early_windows, []
+        if not windows or not self._is_current(passage) or passage.track_id is None:
+            return
+        results = await self._run_blocking(
+            self._db.add_references,
+            passage.track_id,
+            passage.id,
+            [(max(0.0, end - SAMPLE_SECONDS), hashes) for end, hashes in windows],
+        )
+        stored = [(ref, count) for ref, count in results if ref]
+        if stored:
+            self.logger.info(
+                "Learned %d early references: %s passage=%s refs=%d-%d landmarks=%d "
+                "covering %.0f-%.0fs",
+                len(stored),
+                describe(passage.metadata),
+                passage.short_id,
+                stored[0][0],
+                stored[-1][0],
+                sum(count for _, count in stored),
+                max(0.0, windows[0][0] - SAMPLE_SECONDS),
+                windows[-1][0],
+            )
 
     async def _store_reference(
         self, passage: Passage, hashes: Fingerprints, window_end: float

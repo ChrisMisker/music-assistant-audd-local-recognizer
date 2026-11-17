@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from audd_local_recognizer.fingerprints import (
+    FINGERPRINT_SAMPLE_RATE,
     PcmFormat,
     density_subset,
     fingerprint_window,
@@ -16,6 +17,7 @@ from audd_local_recognizer.fingerprints import (
     pcm_dbfs,
     pcm_to_mono_s16,
     pcm_to_wav,
+    resample_s16,
     score_reference,
 )
 
@@ -124,3 +126,46 @@ def test_real_panako_on_synthetic_music() -> None:
     assert fingerprint_window(pcm, SENDSPIN) == density_subset(full)
     # same audio, same fingerprints
     assert panako_fingerprint(pcm, SENDSPIN) == full
+
+
+def _music(rate: int, seconds: float = 12) -> np.ndarray:
+    rng = np.random.default_rng(7)
+    t = np.arange(int(rate * seconds)) / rate
+    signal = sum(
+        np.sin(2 * np.pi * f * t) * (0.5 + 0.5 * np.sin(2 * np.pi * m * t))
+        for f, m in [(196, 0.4), (392, 0.9), (784, 1.3), (1175, 0.25), (587, 1.7)]
+    )
+    # deterministic "noise" defined in time, so both rates sample the same waveform
+    noise = sum(
+        0.01 * np.sin(2 * np.pi * f * t + p)
+        for f, p in zip(rng.uniform(2000, 6000, 12), rng.uniform(0, 6.28, 12), strict=True)
+    )
+    return (0.1 * signal + noise).astype("<f4")
+
+
+def test_resample_is_noop_at_target_rate() -> None:
+    samples = np.arange(-5, 5, dtype=np.int16)
+    assert resample_s16(samples, 44100, 44100) is samples
+
+
+def test_resample_length() -> None:
+    samples = np.zeros(48000, dtype=np.int16)
+    assert resample_s16(samples, 48000, 44100).shape == (44100,)
+
+
+def test_48k_and_44k_give_matching_fingerprints() -> None:
+    """The same music played to a 48 kHz and a 44.1 kHz device must match locally."""
+    at_44k = panako_fingerprint(
+        np.repeat(_music(44100), 2).tobytes(), PcmFormat(44100, 2, 4, "f32le")
+    )
+    at_48k = panako_fingerprint(
+        np.repeat(_music(48000), 2).tobytes(), PcmFormat(48000, 2, 4, "f32le")
+    )
+    assert FINGERPRINT_SAMPLE_RATE == 44100
+    # Production density, as matched in the database. Without resampling this gave 0 votes.
+    query, stored = density_subset(at_44k), density_subset(at_48k)
+    rows = [(h, p) for h, positions in stored.items() for p in positions]
+    _shared, offset, votes, ratio = score_reference(query, rows)
+    assert votes >= 3 * 5  # well above STRONG_VOTES
+    assert offset == 0
+    assert ratio >= 0.8

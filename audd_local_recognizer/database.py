@@ -6,7 +6,9 @@ All methods are blocking; call them through a thread offload from async code.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -64,9 +66,23 @@ class DatabaseStats:
     landmarks: int
 
 
+_QUOTES = re.compile(r"[\"'`\u00b4\u2018\u2019\u201a\u201c\u201d\u201e]")
+_SPACES = re.compile(r"\s+")
+
+
+def _normalize(text: str) -> str:
+    """Casefold, drop quote characters and collapse whitespace.
+
+    AudD spells the same artist differently between results, e.g. 'Nat "King" Cole'
+    and 'Nat King Cole'; both must map to one track.
+    """
+    text = _QUOTES.sub("", unicodedata.normalize("NFKC", text))
+    return _SPACES.sub(" ", text).strip().casefold()
+
+
 def track_key(metadata: dict[str, Any]) -> str:
     """Return the normalized identity key of a track (artist + title)."""
-    return f"{metadata['artist'].strip().casefold()}\x1f{metadata['title'].strip().casefold()}"
+    return f"{_normalize(metadata['artist'])}\x1f{_normalize(metadata['title'])}"
 
 
 class FingerprintDatabase:
@@ -101,6 +117,31 @@ class FingerprintDatabase:
             with db:
                 db.executescript(_SCHEMA)
                 db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        self._rekey_tracks()
+
+    def _rekey_tracks(self) -> None:
+        """Re-apply track_key to stored tracks, merging tracks that now coincide.
+
+        Keeps the database consistent when the key normalization improves. References of
+        a merged duplicate move to the surviving (oldest) track.
+        """
+        with self._transaction() as db:
+            rows = db.execute("SELECT id, track_key, metadata_json FROM tracks ORDER BY id")
+            for track_id, old_key, metadata_json in rows.fetchall():
+                new_key = track_key(json.loads(metadata_json))
+                if new_key == old_key:
+                    continue
+                existing = db.execute(
+                    "SELECT id FROM tracks WHERE track_key=?", (new_key,)
+                ).fetchone()
+                if existing is None:
+                    db.execute("UPDATE tracks SET track_key=? WHERE id=?", (new_key, track_id))
+                    continue
+                db.execute(
+                    "UPDATE reference_windows SET track_id=? WHERE track_id=?",
+                    (existing[0], track_id),
+                )
+                db.execute("DELETE FROM tracks WHERE id=?", (track_id,))
 
     def upsert_track(self, metadata: dict[str, Any]) -> int:
         """Insert or refresh a track by artist/title and return its id."""
@@ -128,22 +169,39 @@ class FingerprintDatabase:
 
         Returns (0, 0) and stores nothing when the window has no landmarks.
         """
-        rows = {(h, int(p)) for h, positions in hashes.items() for p in positions}
-        if not rows:
-            return 0, 0
+        return self.add_references(track_id, passage_id, [(passage_offset_seconds, hashes)])[0]
+
+    def add_references(
+        self,
+        track_id: int,
+        passage_id: str,
+        windows: list[tuple[float, Fingerprints]],
+    ) -> list[tuple[int, int]]:
+        """Persist several reference windows in one transaction.
+
+        Returns (reference_id, landmark_count) per window, (0, 0) for empty windows.
+        """
+        results: list[tuple[int, int]] = []
         with self._transaction() as db:
-            cur = db.execute(
-                """INSERT INTO reference_windows
-                   (track_id, passage_id, passage_offset_seconds, landmark_count)
-                   VALUES(?, ?, ?, ?)""",
-                (track_id, passage_id, passage_offset_seconds, len(rows)),
-            )
-            reference_id = int(cur.lastrowid or 0)
-            db.executemany(
-                "INSERT INTO landmarks(reference_id, fingerprint_hash, position) VALUES(?, ?, ?)",
-                ((reference_id, h, p) for h, p in rows),
-            )
-        return reference_id, len(rows)
+            for passage_offset_seconds, hashes in windows:
+                rows = {(h, int(p)) for h, positions in hashes.items() for p in positions}
+                if not rows:
+                    results.append((0, 0))
+                    continue
+                cur = db.execute(
+                    """INSERT INTO reference_windows
+                       (track_id, passage_id, passage_offset_seconds, landmark_count)
+                       VALUES(?, ?, ?, ?)""",
+                    (track_id, passage_id, passage_offset_seconds, len(rows)),
+                )
+                reference_id = int(cur.lastrowid or 0)
+                db.executemany(
+                    "INSERT INTO landmarks(reference_id, fingerprint_hash, position) "
+                    "VALUES(?, ?, ?)",
+                    ((reference_id, h, p) for h, p in rows),
+                )
+                results.append((reference_id, len(rows)))
+        return results
 
     def find_best_match(
         self,

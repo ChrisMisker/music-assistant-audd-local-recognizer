@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 # evidence from real recordings.
 DENSITY_DIVISOR = 16
 
+# Panako works in samples (FFT window, hop), so hashes and positions depend on the sample
+# rate. Live sources change rate with the output device (48 kHz for one player, 44.1 kHz for
+# AirPlay), so every window is resampled to this fixed rate before fingerprinting. 44.1 kHz
+# is the rate the density and thresholds were validated at.
+FINGERPRINT_SAMPLE_RATE = 44100
+
 SILENCE_FLOOR_DBFS = -120.0
 
 Fingerprints = dict[str, list[int]]
@@ -108,15 +114,28 @@ def pcm_to_wav(pcm: bytes, fmt: PcmFormat) -> bytes:
     return out.getvalue()
 
 
+def resample_s16(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Resample mono int16 audio with a polyphase filter (no-op when rates match)."""
+    if source_rate == target_rate or not samples.size:
+        return samples
+    from scipy.signal import resample_poly  # noqa: PLC0415 - audalign dependency, heavy
+
+    divisor = math.gcd(source_rate, target_rate)
+    resampled = resample_poly(
+        samples.astype(np.float32), target_rate // divisor, source_rate // divisor
+    )
+    return np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+
+
 def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
     """Return the full Audalign Panako hashes for one PCM window (CPU heavy: offload it)."""
     # Imported lazily: audalign pulls in a large dependency tree.
     from audalign.config.fingerprint import FingerprintConfig  # noqa: PLC0415
     from audalign.recognizers.fingerprint import fingerprinter  # noqa: PLC0415
 
-    samples = pcm_to_mono_s16(pcm, fmt)
+    samples = resample_s16(pcm_to_mono_s16(pcm, fmt), fmt.sample_rate, FINGERPRINT_SAMPLE_RATE)
     config = FingerprintConfig()
-    config.sample_rate = fmt.sample_rate
+    config.sample_rate = FINGERPRINT_SAMPLE_RATE
     if hasattr(config, "set_hash_style"):
         config.set_hash_style("panako")
     else:

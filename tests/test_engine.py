@@ -80,7 +80,7 @@ async def test_a_first_unknown_track_learns_without_self_recognition(
     assert len(h.audd_calls) == 1
     assert [m["title"] for m in h.published] == ["Song 1"]
     refs = h.references()
-    assert len(refs) >= 8  # AudD window + one every 6 s
+    assert len(refs) >= 8  # early lookup windows + one every 6 s
     assert {p for _, p in refs} == {h.engine.passage.id}
     assert local_hits(caplog) == []
     # identified passages only learn: one lookup window, every other window was learned
@@ -110,8 +110,8 @@ async def test_b_track_transition_is_a_hard_boundary(make_harness: Any) -> None:
 
 async def test_c_audd_miss_then_retry_in_same_passage(make_harness: Any) -> None:
     h = make_harness(audd_script=[None, None])
-    await h.play(1, 80)
-    # attempts at 12 s, 42 s (both scripted misses) and 72 s (hit)
+    await h.play(1, 90)
+    # attempts at 24 s, 54 s (both scripted misses) and 84 s (hit)
     assert len(h.audd_calls) == 3
     assert [m["title"] for m in h.published] == ["Song 1"]
 
@@ -189,11 +189,11 @@ async def test_g_late_fingerprint_result_is_discarded(make_harness: Any) -> None
 async def test_g_late_audd_result_is_discarded(make_harness: Any) -> None:
     gate = asyncio.Event()
     h = make_harness(audd_gate=gate)
-    for second in range(12):
-        h.engine.feed(music(1, second))
-        await asyncio.sleep(0)
+    await h.play(1, 23)  # local-only lookups at 12 s and 18 s
+    h.engine.feed(music(1, 23))  # 24 s: first AudD attempt, held at the gate
     late = h.engine.task
-    await asyncio.sleep(0)
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert len(h.audd_calls) == 1  # waiting on AudD
     for _ in range(GAP):
         h.engine.feed(silence())
@@ -225,10 +225,10 @@ async def test_h_different_track_is_not_a_false_local_hit(
 async def test_audd_cadence_and_cap_for_unknown_passage(make_harness: Any) -> None:
     h = make_harness(audd_known=set())
     await h.play(9, 1000)
-    # 12, 42, 72 (30 s apart), then every 90 s, capped at 8 attempts per passage
+    # 24, 54, 84 (30 s apart), then every 90 s, capped at 8 attempts per passage
     assert len(h.audd_calls) == eng.AUDD_MAX_ATTEMPTS_PER_PASSAGE
-    starts = [c[0] % 1000 for c in h.audd_calls]
-    assert starts[:4] == [0, 30, 60, 150]
+    window_starts = [c[0] % 1000 for c in h.audd_calls]
+    assert window_starts[:4] == [12, 42, 72, 162]  # never the 0-12 s intro
 
 
 async def test_audd_cadence_resets_for_new_passage(make_harness: Any) -> None:
@@ -237,14 +237,14 @@ async def test_audd_cadence_resets_for_new_passage(make_harness: Any) -> None:
     await h.quiet(GAP)
     h.audd_known = {2}
     calls_before = len(h.audd_calls)
-    await h.play(2, 20)
+    await h.play(2, 30)
     assert len(h.audd_calls) == calls_before + 1
     assert h.published[-1]["title"] == "Song 2"
 
 
 async def test_error_300_style_no_match_does_not_back_off(make_harness: Any) -> None:
     h = make_harness(audd_known=set())
-    await h.play(9, 50)
+    await h.play(9, 60)
     assert len(h.audd_calls) == 2
     assert h.engine.audd_backoff_seconds == 0
 
@@ -252,7 +252,7 @@ async def test_error_300_style_no_match_does_not_back_off(make_harness: Any) -> 
 async def test_real_audd_failure_backs_off(make_harness: Any) -> None:
     h = make_harness(audd_script=[AudDError("AudD HTTP 500")] * 3)
     await h.play(1, 100)
-    # 12 s fails -> blocked 60 s; 72 s fails -> blocked 120 s
+    # 24 s fails -> blocked 60 s; 84 s fails -> blocked 120 s
     assert len(h.audd_calls) == 2
     assert h.engine.audd_backoff_seconds == 120
     assert h.published == []
@@ -286,7 +286,8 @@ async def test_learning_stops_after_cap(make_harness: Any, monkeypatch: Any) -> 
     monkeypatch.setattr(eng, "MAX_LEARN_SECONDS_PER_PASSAGE", 40)
     h = make_harness()
     await h.play(1, 120)
-    assert len(h.references()) == 5  # AudD window + learns at 18, 24, 30, 36 s
+    # early lookup windows (ending 12, 18, 24 s) + learns at 30, 36 s; none after 40 s
+    assert len(h.references()) == 5
 
 
 async def test_close_cancels_running_task(make_harness: Any) -> None:
@@ -299,3 +300,70 @@ async def test_close_cancels_running_task(make_harness: Any) -> None:
         await task
     h.engine.feed(music(1, 12))  # ignored after close
     assert h.engine.passage is None
+
+
+# ---------------------------------------------------------------- early windows
+
+
+def _offsets(h: Any) -> list[float]:
+    import sqlite3  # noqa: PLC0415
+
+    with sqlite3.connect(h.db.path) as conn:
+        return [
+            float(o)
+            for (o,) in conn.execute(
+                "SELECT passage_offset_seconds FROM reference_windows ORDER BY id"
+            )
+        ]
+
+
+async def test_early_lookup_windows_are_learned_after_identification(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(audd_script=[None])  # AudD misses at 24 s, hits at 54 s
+    await h.play(1, 60)
+    offsets = _offsets(h)
+    # every lookup window from the very start (0-12 s) up to the AudD window (42-54 s)
+    assert offsets[:8] == [0, 6, 12, 18, 24, 30, 36, 42]
+    assert any("Learned 8 early references" in r.getMessage() for r in caplog.records)
+
+
+async def test_replay_matches_locally_from_the_start(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(audd_script=[None])  # identified late (54 s) on first play
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    await h.play(1, 12)  # replay: identified at the very first lookup
+    assert len(h.audd_calls) == 2
+    assert h.engine.passage.identified
+    assert len(local_hits(caplog)) == 1
+
+
+async def test_local_hit_also_stores_early_windows(make_harness: Any) -> None:
+    h = make_harness()
+    await h.play(1, 40)
+    await h.quiet(GAP)
+    await h.play(1, 13)
+    replay = h.engine.passage.id
+    assert [p for _, p in h.references()].count(replay) >= 1
+
+
+async def test_early_windows_are_capped(make_harness: Any, monkeypatch: Any) -> None:
+    monkeypatch.setattr(eng, "MAX_EARLY_WINDOWS", 3)
+    h = make_harness(audd_script=[None, None])  # hit at 84 s after 13 lookups
+    await h.play(1, 85)
+    # 3 kept early windows + the AudD window itself
+    assert _offsets(h)[:4] == [0, 6, 12, 72]
+
+
+async def test_early_windows_of_a_closed_passage_are_never_stored(make_harness: Any) -> None:
+    h = make_harness(audd_known=set())
+    await h.play(9, 30)
+    await h.quiet(GAP)
+    h.audd_known = {2}
+    await h.play(2, 30)
+    assert {t for t, _ in h.references()} == {1}  # only song 2's track (id 1)
+    assert all(songs_in(w) for w in h.windows)

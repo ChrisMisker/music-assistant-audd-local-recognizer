@@ -113,3 +113,49 @@ def test_old_v05_schema_is_refused(db_path: Path) -> None:
         conn.execute("CREATE TABLE reference_windows (id INTEGER PRIMARY KEY)")
     with pytest.raises(SchemaVersionError):
         FingerprintDatabase(db_path)
+
+
+def test_track_key_ignores_quote_variants() -> None:
+    plain = {"artist": "Nat King Cole", "title": "Unforgettable"}
+    quoted = {"artist": 'Nat "King" Cole', "title": "Unforgettable"}
+    curly = {"artist": "Nat \u201cKing\u201d  Cole", "title": " unforgettable "}
+    assert track_key(plain) == track_key(quoted) == track_key(curly)
+    assert track_key({"artist": "A", "title": "Don\u2019t"}) == track_key(
+        {"artist": "a", "title": "Don't"}
+    )
+
+
+def test_reopen_merges_tracks_that_now_share_a_key(db_path: Path) -> None:
+    import json  # noqa: PLC0415
+
+    db = FingerprintDatabase(db_path)
+    plain = db.upsert_track({"artist": "Nat King Cole", "title": "Unforgettable"})
+    db.add_reference(plain, "p1", 0.0, _landmarks(5))
+    # simulate a row written by the old, quote-sensitive key
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO tracks(track_key, metadata_json) VALUES(?, ?)",
+            (
+                'nat "king" cole\x1funforgettable',
+                json.dumps({"artist": 'Nat "King" Cole', "title": "Unforgettable"}),
+            ),
+        )
+        old = int(cur.lastrowid)
+    db.add_reference(old, "p2", 0.0, _landmarks(5, prefix="x"))
+    reopened = FingerprintDatabase(db_path)
+    stats = reopened.stats()
+    assert (stats.tracks, stats.references) == (1, 2)
+    match = reopened.find_best_match(_landmarks(5, prefix="x"))
+    assert match is not None
+    assert match[0].track_id == plain
+
+
+def test_add_references_batch(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    results = db.add_references(
+        track, "p", [(0.0, _landmarks(3)), (6.0, {}), (12.0, _landmarks(4, prefix="y"))]
+    )
+    assert [count for _, count in results] == [3, 0, 4]
+    assert results[1] == (0, 0)
+    assert db.stats().references == 2
