@@ -135,6 +135,8 @@ log line shows the level).
 
 [Apache License 2.0](LICENSE), the same licence as Music Assistant.
 
+*Developed by Chris Misker, with the help of [Claude Code](https://claude.com/claude-code).*
+
 ## Development
 
 Release history: [CHANGELOG.md](CHANGELOG.md).
