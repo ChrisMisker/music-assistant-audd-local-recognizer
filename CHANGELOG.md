@@ -2,6 +2,15 @@
 
 ## 0.7.0 (unreleased)
 
+### ⚠️ Changed: choose your audio source
+
+- **"Recognize all live audio sources" is now off by default**, following the Music Assistant
+  maintainers' advice: you choose which live sources (e.g. your turntable) are analysed.
+  **If you never changed this setting, recognition stops after the update until you open the
+  provider's settings and select your source** under "Audio sources to recognize" (or turn
+  "Recognize all live audio sources" back on). The log says so when a source is skipped, and
+  warns at startup when no source is selected.
+
 ### Improved
 
 - **Faster local recognition of replays.** Weak but genuine matches now add up over consecutive

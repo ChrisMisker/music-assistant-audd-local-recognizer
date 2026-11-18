@@ -17,6 +17,9 @@ recognized **locally**, without any external service.
 ## What's new
 
 **0.7.0** *(in testing, not released yet)*
+- ⚠️ **Choose your audio source:** "Recognize all live audio sources" is now off by default. After
+  updating, open the provider's settings and select your source (e.g. your turntable), or nothing
+  is recognized.
 - Faster local recognition when you replay a record: weak matches now add up over consecutive
   lookups.
 - The database stays small: at most about two plays are kept per track (see
@@ -138,8 +141,8 @@ Things to keep in mind:
 | Setting | Meaning |
 |---|---|
 | **AudD API token** | Needed to identify new music. Optional if you only want local recognition. |
-| **Recognize all live audio sources** | On by default. Turn off to pick specific sources. |
-| **Audio sources to recognize** | The sources to listen to, when the option above is off. |
+| **Audio sources to recognize** | **Choose your source here** (e.g. your turntable). Nothing is recognized until you do. |
+| **Recognize all live audio sources** | Off by default. Turn on to recognize every live source that allows analysis. |
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |

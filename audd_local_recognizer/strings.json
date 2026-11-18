@@ -9,10 +9,12 @@
       "description": "Needed to identify music the provider has not learned yet. Without a token only previously learned tracks are recognized (locally). AudD is a paid service with a free trial; get a token at https://dashboard.audd.io"
     },
     "all_audio_sources": {
-      "label": "Recognize all live audio sources"
+      "label": "Recognize all live audio sources",
+      "description": "Off by default: choose below which live sources (e.g. your turntable) to recognize. Turn on to recognize every live audio source that allows analysis."
     },
     "audio_sources": {
-      "label": "Audio sources to recognize"
+      "label": "Audio sources to recognize",
+      "description": "Choose the live sources to recognize, e.g. your turntable. Nothing is recognized until you choose one."
     },
     "silence_threshold_dbfs": {
       "label": "Silence threshold (dBFS)",

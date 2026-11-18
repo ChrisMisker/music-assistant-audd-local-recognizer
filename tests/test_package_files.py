@@ -57,3 +57,11 @@ def test_ci_checks_this_provider() -> None:
     ci = (REPOSITORY / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert f"folder: {DOMAIN}\n" in ci
     assert "server-line: nightly\n" in ci
+
+
+def test_all_sources_is_off_by_default() -> None:
+    """MA maintainers' advice: users choose the sources to analyse; 'all' is opt-in."""
+    source = (PROVIDER / "provider.py").read_text(encoding="utf-8")
+    entry = re.search(r"key=CONF_ALL_AUDIO_SOURCES,(.*?)label=", source, re.DOTALL)
+    assert entry is not None
+    assert "default_value=False" in entry.group(1)

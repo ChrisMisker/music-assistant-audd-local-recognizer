@@ -9,10 +9,12 @@
       "description": "Nodig om muziek te herkennen die de provider nog niet heeft geleerd. Zonder token worden alleen eerder geleerde nummers (lokaal) herkend. AudD is een betaalde dienst met een gratis proefperiode; een token krijg je op https://dashboard.audd.io"
     },
     "all_audio_sources": {
-      "label": "Alle live audiobronnen herkennen"
+      "label": "Alle live audiobronnen herkennen",
+      "description": "Standaard uit: kies hieronder welke live bronnen (bijvoorbeeld je platenspeler) herkend worden. Zet aan om elke live audiobron te herkennen die analyse toestaat."
     },
     "audio_sources": {
-      "label": "Te herkennen audiobronnen"
+      "label": "Te herkennen audiobronnen",
+      "description": "Kies de live bronnen om te herkennen, bijvoorbeeld je platenspeler. Er wordt niets herkend totdat je er een kiest."
     },
     "silence_threshold_dbfs": {
       "label": "Stiltedrempel (dBFS)",

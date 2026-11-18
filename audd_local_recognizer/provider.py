@@ -92,6 +92,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             100 / DENSITY_DIVISOR,
             "configured" if self._token() else "not configured",
         )
+        if not self.config.get_value(CONF_ALL_AUDIO_SOURCES) and not self._selected_sources():
+            self.logger.warning(
+                "No live audio source is selected, so nothing will be recognized. Open this "
+                "provider's settings and choose your source (e.g. your turntable) under "
+                "'Audio sources to recognize', or turn on 'Recognize all live audio sources'."
+            )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the provider settings."""
@@ -110,7 +116,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             ConfigEntry(
                 key=CONF_ALL_AUDIO_SOURCES,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=True,
+                # Off by default (MA maintainers' advice): the user picks the sources to analyse.
+                default_value=False,
                 required=False,
                 label="Recognize all live audio sources",
             ),
@@ -186,17 +193,18 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     def _token(self) -> str:
         return str(self.config.get_value(CONF_AUDD_API_TOKEN) or "").strip()
 
+    def _selected_sources(self) -> set[str]:
+        value = self.config.get_value(CONF_AUDIO_SOURCES)
+        if isinstance(value, str):
+            return {value} if value else set()
+        if isinstance(value, list):
+            return {str(item) for item in value}
+        return set()
+
     def _source_enabled(self, streamdetails: StreamDetails) -> bool:
         if bool(self.config.get_value(CONF_ALL_AUDIO_SOURCES)):
             return True
-        value = self.config.get_value(CONF_AUDIO_SOURCES)
-        if isinstance(value, str):
-            selected = {value}
-        elif isinstance(value, list):
-            selected = {str(item) for item in value}
-        else:
-            selected = set()
-        return f"{streamdetails.provider}|{streamdetails.item_id}" in selected
+        return f"{streamdetails.provider}|{streamdetails.item_id}" in self._selected_sources()
 
     async def _start_analysis(
         self, session_id: str, streamdetails: StreamDetails, audio_format: AudioFormat
@@ -205,6 +213,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if streamdetails.media_type != MediaType.AUDIO_SOURCE:
             return False
         if not self._source_enabled(streamdetails):
+            self.logger.info(
+                "Not recognizing live source %s|%s: it is not selected in this provider's "
+                "settings (choose it under 'Audio sources to recognize', or turn on "
+                "'Recognize all live audio sources')",
+                streamdetails.provider,
+                streamdetails.item_id,
+            )
             return False
         fmt = PcmFormat(
             sample_rate=int(audio_format.sample_rate),
