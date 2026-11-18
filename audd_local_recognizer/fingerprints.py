@@ -178,8 +178,14 @@ def score_reference(
     """
     Score one stored reference against a query by coherent time offset.
 
-    Returns (shared_hashes, best_offset, best_votes, ratio) where ratio is
-    best_votes / shared_hashes. Only rows whose hash occurs in the query matter.
+    Returns (shared_hashes, best_offset, best_votes, ratio) where best_votes is the number of
+    *distinct* shared hashes that agree on best_offset and ratio = best_votes / shared_hashes
+    (so 0..1). Only rows whose hash occurs in the query matter.
+
+    A hash counts once per offset, however often it repeats: in repetitive audio (a drum
+    machine, a held note) one hash can occur at several positions, and counting every
+    position pair let a single accidental hash look like several votes (seen on real vinyl,
+    2026-11-18: "votes=3 ratio=3.000").
     """
     stored: dict[str, list[int]] = {}
     for fingerprint_hash, position in stored_rows:
@@ -187,9 +193,12 @@ def score_reference(
     shared = query.keys() & stored.keys()
     offsets: Counter[int] = Counter()
     for fingerprint_hash in shared:
-        for query_position in query[fingerprint_hash]:
-            for stored_position in stored[fingerprint_hash]:
-                offsets[stored_position - query_position] += 1
+        hash_offsets = {
+            stored_position - query_position
+            for query_position in query[fingerprint_hash]
+            for stored_position in stored[fingerprint_hash]
+        }
+        offsets.update(hash_offsets)
     if not offsets:
         return len(shared), 0, 0, 0.0
     # Deterministic tie-break: most votes, then smallest offset.

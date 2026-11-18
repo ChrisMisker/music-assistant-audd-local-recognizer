@@ -170,3 +170,20 @@ def test_48k_and_44k_give_matching_fingerprints() -> None:
     assert votes >= 3 * 5  # well above STRONG_VOTES
     assert offset == 0
     assert ratio >= 0.8
+
+
+def test_a_repeated_hash_counts_as_one_vote() -> None:
+    """Repetitive audio: one hash at several positions must not look like several matches."""
+    query = {"loop": [10, 20, 30, 40, 50]}
+    stored = [("loop", 15), ("loop", 25), ("loop", 35), ("loop", 45), ("loop", 55)]
+    shared, _offset, votes, ratio = score_reference(query, stored)
+    # before the fix: 5 votes at offset +5, ratio 5.0
+    assert (shared, votes, ratio) == (1, 1, 1.0)
+
+
+def test_distinct_hashes_still_vote_together() -> None:
+    query = {"a": [10, 40], "b": [20], "c": [30]}
+    stored = [("a", 15), ("a", 45), ("b", 25), ("c", 35), ("c", 99)]
+    shared, offset, votes, ratio = score_reference(query, stored)
+    assert (shared, offset, votes) == (3, 5, 3)
+    assert ratio == 1.0

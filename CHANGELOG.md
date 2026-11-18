@@ -19,6 +19,14 @@
 - Clearer logs: every identification logs how and after how many seconds
   (`Identified … via local after 31s`), and local candidates show their accumulated votes.
 
+### Fixed
+
+- **Repetitive audio could look like a strong local match.** In music with a repeating pattern
+  (a drum machine, a held note) one fingerprint can occur several times in a sample, and each
+  repetition counted as a separate vote. One accidental match could then look like 3–5 votes,
+  enough to show a wrong title. A match now counts each distinct fingerprint only once. Found
+  in a real test with Phil Collins' *In the Air Tonight*; no wrong title was shown.
+
 ### Developer
 
 - `scripts/vote-report.sh`: per track play, how and when it was identified, AudD calls and local
