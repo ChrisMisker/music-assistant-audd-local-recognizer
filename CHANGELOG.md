@@ -47,6 +47,8 @@
   samples sent to AudD as WAV, with their outcome and measurements (level, clipping, left/right
   correlation), in the provider's data folder. Useful to hear why AudD misses a track.
 - A no-match now logs AudD's reason (`no result`, `error 300`, …).
+- New advanced setting **"Record the input stream for debugging"** (off by default): records the
+  live input as the recognizer receives it (WAV, ~10 MB per minute, at most 60 minutes in total).
 
 ### Hardening
 

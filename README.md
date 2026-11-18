@@ -163,6 +163,7 @@ Things to keep in mind:
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
+| *Advanced:* **Record the input stream for debugging** | Off by default. Records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute, up to 60 minutes in total, then it stops) in the provider's data folder. For troubleshooting only; the files are included in Home Assistant backups, so remove them afterwards. |
 | *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 
 The defaults were tuned on a real turntable. Only change them if track changes are missed

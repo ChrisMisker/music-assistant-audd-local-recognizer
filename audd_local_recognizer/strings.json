@@ -31,6 +31,10 @@
     "save_audd_samples": {
       "label": "Save AudD samples for debugging",
       "description": "Keep the last 40 audio samples sent to AudD, with their outcome and measurements, in the provider's data folder (debug/). Only for troubleshooting; they stay on this server."
+    },
+    "record_input_stream": {
+      "label": "Record the input stream for debugging",
+      "description": "Record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute) in the provider's data folder (recordings/), up to 60 minutes in total; then it stops by itself. Only for troubleshooting; the files stay on this server and are included in Home Assistant backups, so remove them afterwards."
     }
   }
 }

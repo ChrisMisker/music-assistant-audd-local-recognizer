@@ -15,3 +15,5 @@ __pycache__/
 .data/
 # AudD debug samples fetched from the server (audio of your records: never commit)
 debug-samples/
+# input recordings fetched from the server (audio of your records: never commit)
+debug-recordings/

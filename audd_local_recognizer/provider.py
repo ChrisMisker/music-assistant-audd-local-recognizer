@@ -24,6 +24,7 @@ from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
+from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 VERSION = "0.7.0"
 STORAGE_SUBDIR = "audd_local_recognizer"
 DEBUG_SUBDIR = "debug"
+RECORDINGS_SUBDIR = "recordings"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
@@ -45,6 +47,7 @@ CONF_SILENCE_DBFS = "silence_threshold_dbfs"
 CONF_RESUME_DBFS = "resume_threshold_dbfs"
 CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
 CONF_SAVE_SAMPLES = "save_audd_samples"
+CONF_RECORD_INPUT = "record_input_stream"
 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
@@ -69,6 +72,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         """Initialize provider state (the database opens in handle_async_init)."""
         super().__init__(mass, manifest, config, supported_features)
         self._engines: dict[str, RecognitionEngine] = {}
+        self._recorders: dict[str, tuple[InputRecorder, asyncio.Lock]] = {}
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -172,6 +176,21 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                     "Keep the last 40 audio samples sent to AudD, with their outcome and "
                     "measurements, in the provider's data folder (debug/). Only for "
                     "troubleshooting; they stay on this server."
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_RECORD_INPUT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+                label="Record the input stream for debugging",
+                description=(
+                    "Record the live input exactly as the recognizer receives it (WAV, about "
+                    "10 MB per minute) in the provider's data folder (recordings/), up to 60 "
+                    "minutes in total; then it stops by itself. Only for troubleshooting; the "
+                    "files stay on this server and are included in Home Assistant backups, so "
+                    "remove them afterwards."
                 ),
             ),
         )
@@ -284,7 +303,53 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             logger=self.logger,
             save_sample=self._save_sample if self.config.get_value(CONF_SAVE_SAMPLES) else None,
         )
+        if self.config.get_value(CONF_RECORD_INPUT):
+            await self._start_recording(session_id, fmt)
         return True
+
+    async def _start_recording(self, session_id: str, fmt: PcmFormat) -> None:
+        folder = self._storage_dir() / RECORDINGS_SUBDIR
+        recorder = await asyncio.to_thread(InputRecorder, folder, fmt)
+        if recorder.budget <= 0:
+            self.logger.warning(
+                "Input recording is on, but %s already holds the maximum of %d minutes: "
+                "remove the recordings (scripts/fetch-recordings.sh --delete) to record again",
+                folder,
+                MAX_RECORDING_SECONDS // 60,
+            )
+            return
+        self._recorders[session_id] = (recorder, asyncio.Lock())
+        self.logger.info(
+            "Recording the input of session %s to %s (%.0f of %d minutes left)",
+            session_id,
+            folder,
+            recorder.budget / 60,
+            MAX_RECORDING_SECONDS // 60,
+        )
+
+    async def _record(self, session_id: str, pcm_chunk: bytes) -> None:
+        if (entry := self._recorders.get(session_id)) is None:
+            return
+        recorder, lock = entry
+        recorder.add(pcm_chunk)
+        if recorder.buffered_seconds < FLUSH_SECONDS:
+            return
+        async with lock:
+            await asyncio.to_thread(recorder.flush)
+        if recorder.full:
+            self._recorders.pop(session_id, None)
+            self.logger.info(
+                "Input recording stopped: the maximum of %d minutes is reached",
+                MAX_RECORDING_SECONDS // 60,
+            )
+
+    async def _stop_recording(self, session_id: str) -> None:
+        if (entry := self._recorders.pop(session_id, None)) is None:
+            return
+        recorder, lock = entry
+        async with lock:
+            await asyncio.to_thread(recorder.flush)
+            await asyncio.to_thread(recorder.close)
 
     async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
         await asyncio.to_thread(write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info)
@@ -324,16 +389,25 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
         if (engine := self._engines.get(session_id)) is not None:
             engine.feed(pcm_chunk)
+        if self._recorders:
+            try:
+                await self._record(session_id, pcm_chunk)
+            except Exception:
+                # a debug recording must never affect recognition or the stream
+                self._recorders.pop(session_id, None)
+                self.logger.exception("Input recording failed and was stopped")
 
     async def cancel(self, session_id: str) -> None:
         """End a live session and drop its in-memory state (the DB is untouched)."""
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
             self.logger.info("Analysis ended: session=%s", session_id)
+        await self._stop_recording(session_id)
         await super().cancel(session_id)
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
         """Live sources are never finalized; nothing is stored in MA either way."""
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
+        await self._stop_recording(session_id)
         return None
