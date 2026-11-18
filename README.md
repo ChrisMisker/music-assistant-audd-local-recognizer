@@ -22,7 +22,7 @@ recognized **locally**, without any external service.
   is recognized.
 - Faster local recognition when you replay a record: weak matches now add up over consecutive
   lookups.
-- The database stays small: at most about two plays are kept per track (see
+- The database stays small: only the two most recent plays are kept per track (see
   [Disk space](#disk-space)).
 - An update can never stop the provider because of an old or damaged database; it starts a new
   one and logs a warning.
@@ -134,8 +134,9 @@ The local fingerprint database lives on your Music Assistant server, in
 add-on). **It grows as you play new music, and it can grow quickly**:
 
 - each play of a ~3-minute track adds roughly **0.5 MB**;
-- from version 0.7 each track keeps at most about **two plays (~1 MB)**; older plays are removed
-  automatically. (In 0.6.0 there is no limit yet: every play adds to the database.)
+- from version 0.7 each track keeps its **two most recent plays** (~1 MB for a 3-minute track,
+  more for longer ones); older plays are removed automatically. (In 0.6.0 there is no limit yet:
+  every play adds to the database.)
 
 Rough upper limits from 0.7:
 

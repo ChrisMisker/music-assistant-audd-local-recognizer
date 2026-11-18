@@ -89,9 +89,10 @@ ACCUMULATION_MIN_VOTES = 2  # a window counts from this many votes (and CONFIRM_
 ACCUMULATED_VOTES = 6  # total needed ...
 ACCUMULATED_WINDOWS = 2  # ... from at least this many windows
 
-# At most this many references per track (about two plays of a 3-minute track, ~1 MB). Older
-# plays are removed whole, oldest first; the play being learned is always kept.
-MAX_REFERENCES_PER_TRACK = 60
+# Keep the references of at most this many plays per track (the current one included), so a
+# 5-minute track keeps as many plays as a 3-minute one (a reference cap of 60 left long tracks
+# with a single play). Bounded by MAX_LEARN_SECONDS_PER_PASSAGE: ~1 MB per 3-minute track.
+MAX_PLAYS_PER_TRACK = 2
 # A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
 # far above that means abnormal input (noise, a broken source); it is not stored, so such a
 # source cannot blow up the database.
@@ -677,16 +678,16 @@ class RecognitionEngine:
             await self._prune(passage)
 
     async def _prune(self, passage: Passage) -> None:
-        """Keep the track within MAX_REFERENCES_PER_TRACK, dropping its oldest plays."""
+        """Keep the track within MAX_PLAYS_PER_TRACK plays, dropping the oldest."""
         if not self._is_current(passage) or passage.track_id is None:
             return
         removed = await self._run_blocking(
-            self._db.prune_track, passage.track_id, passage.id, MAX_REFERENCES_PER_TRACK
+            self._db.prune_track, passage.track_id, passage.id, MAX_PLAYS_PER_TRACK
         )
         if removed:
             self.logger.info(
-                "Removed %d references of older plays of %s (max %d per track)",
+                "Removed %d references of older plays of %s (keeping %d plays per track)",
                 removed,
                 describe(passage.metadata),
-                MAX_REFERENCES_PER_TRACK,
+                MAX_PLAYS_PER_TRACK,
             )

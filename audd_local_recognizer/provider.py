@@ -347,6 +347,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 MAX_RECORDING_SECONDS // 60,
             )
             return
+        # the database as it is when the recording starts: replaying against a later copy would
+        # include what was learned (and pruned) during this very recording
+        await asyncio.to_thread(self._db.backup_to, folder / f"{recorder.started}_db.sqlite3")
         self._recorders[session_id] = (recorder, asyncio.Lock())
         self.logger.info(
             "Recording the input of session %s to %s (%.0f of %d minutes left)",

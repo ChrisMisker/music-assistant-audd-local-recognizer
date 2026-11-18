@@ -162,14 +162,14 @@ def test_add_references_batch(db_path: Path) -> None:
     assert db.stats().references == 2
 
 
-def test_prune_removes_oldest_plays_whole_and_keeps_current(db_path: Path) -> None:
+def test_prune_keeps_the_most_recent_plays_whole(db_path: Path) -> None:
     db = FingerprintDatabase(db_path)
     track = db.upsert_track(META)
     for play in ("old", "middle", "current"):
         db.add_references(
             track, play, [(i * 6.0, _landmarks(3, prefix=f"{play}{i}")) for i in range(5)]
         )
-    assert db.prune_track(track, "current", max_references=10) == 5
+    assert db.prune_track(track, "current", max_plays=2) == 5  # "old" goes
     with sqlite3.connect(db_path) as conn:
         plays = [r[0] for r in conn.execute("SELECT DISTINCT passage_id FROM reference_windows")]
         orphans = conn.execute(
@@ -178,9 +178,21 @@ def test_prune_removes_oldest_plays_whole_and_keeps_current(db_path: Path) -> No
         ).fetchone()[0]
     assert sorted(plays) == ["current", "middle"]
     assert orphans == 0  # landmarks went with their references
-    # the current play is never removed, even when it alone exceeds the cap
-    assert db.prune_track(track, "current", max_references=2) == 5
+    # the current play is never removed
+    assert db.prune_track(track, "current", max_plays=1) == 5
     assert db.stats().references == 5
+
+
+def test_long_tracks_keep_as_many_plays_as_short_ones(db_path: Path) -> None:
+    """Regression: a reference cap left a 5-minute track with only its latest play."""
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    for play in ("previous", "current"):  # 50 windows each, like a 5-minute track
+        db.add_references(
+            track, play, [(i * 6.0, _landmarks(2, prefix=f"{play}{i}x")) for i in range(50)]
+        )
+    assert db.prune_track(track, "current", max_plays=2) == 0
+    assert db.stats().references == 100
 
 
 def test_prune_is_per_track(db_path: Path) -> None:
@@ -189,9 +201,10 @@ def test_prune_is_per_track(db_path: Path) -> None:
     b = db.upsert_track(OTHER)
     db.add_references(a, "pa", [(0.0, _landmarks(3))])
     db.add_references(b, "pb", [(0.0, _landmarks(3, prefix="b")), (6.0, _landmarks(3, prefix="c"))])
-    assert db.prune_track(a, "now", max_references=1) == 0
-    assert db.prune_track(b, "now", max_references=1) == 2
-    assert db.stats().references == 1
+    db.add_references(b, "pb2", [(0.0, _landmarks(3, prefix="d"))])
+    assert db.prune_track(a, "now", max_plays=2) == 0
+    assert db.prune_track(b, "now", max_plays=2) == 2  # keeps the newest other play (pb2)
+    assert db.stats().references == 2
 
 
 def test_open_database_recreates_an_incompatible_file(db_path: Path) -> None:
@@ -235,3 +248,13 @@ def test_metadata_of_a_known_track_stays_stable(db_path: Path) -> None:
     db.upsert_track({**META, "album": None, "artwork": None})
     assert db.track_metadata(track) == stored
     assert db.track_metadata(9999) is None
+
+
+def test_backup_is_a_consistent_copy(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    db.add_references(db.upsert_track(META), "p", [(0.0, _landmarks(7))])
+    copy = db_path.with_name("copy.sqlite3")
+    db.backup_to(copy)
+    db.add_references(db.upsert_track(OTHER), "q", [(0.0, _landmarks(3, prefix="z"))])
+    copied = FingerprintDatabase(copy).stats()
+    assert (copied.tracks, copied.references, copied.landmarks) == (1, 1, 7)

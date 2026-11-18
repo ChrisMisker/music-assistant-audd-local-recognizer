@@ -18,8 +18,8 @@
   within ~24 s). On real vinyl a replay repeats only 2–4 votes per window, so a track that just
   missed the threshold window after window is now recognized sooner, often without an AudD
   call. Accidental matches (1 vote in every real test so far) never count.
-- **The database no longer grows without limit.** Each track keeps at most 60 references
-  (about two plays); older plays are removed whole, oldest first. Suggested by the Music
+- **The database no longer grows without limit.** Each track keeps the fingerprints of at most
+  its **two most recent plays**; older plays are removed automatically. Suggested by the Music
   Assistant maintainers.
 - **Updates can never stop the provider because of the database.** An incompatible or damaged
   database file is moved aside (`fingerprints.sqlite3.incompatible`) and a new one is started,

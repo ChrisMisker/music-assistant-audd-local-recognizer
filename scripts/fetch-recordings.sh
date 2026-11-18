@@ -5,8 +5,9 @@
 #
 # Needs the provider setting "Record the input stream for debugging" (advanced). Files land in
 # ./debug-recordings/<timestamp>/ (git-ignored: audio of your own records, never commit it).
-# --delete removes the recordings on the HA host after a successful copy (only the WAV files
-# in the provider's recordings/ folder; the database is never touched).
+# --delete removes the recordings on the HA host after a successful copy (only the WAV files and
+# their start-of-recording DB copies in the provider's recordings/ folder; the live database is
+# never touched).
 # Replay them offline: uv run python scripts/replay_recording.py debug-recordings/<timestamp>
 
 source "$(dirname "$0")/_common.sh"
@@ -49,6 +50,6 @@ log "$wavs recording segments + database snapshot in $DEST ($size)"
 if [[ $DELETE == 1 ]]; then
   [[ "$wavs" -gt 0 ]] || die "nothing copied; not deleting anything"
   log "Deleting the recordings on the HA host"
-  remote "$DOCKER exec '$MA_CONTAINER' sh -c 'rm -f $REC_DIR/*.wav'"
+  remote "$DOCKER exec '$MA_CONTAINER' sh -c 'rm -f $REC_DIR/*.wav $REC_DIR/*_db.sqlite3'"
 fi
 log "Replay offline: uv run python scripts/replay_recording.py $DEST"

@@ -438,8 +438,7 @@ async def test_sparse_replay_is_identified_by_accumulated_evidence(
     assert any("Identified Artist 1 - Song 1 via local" in r.getMessage() for r in caplog.records)
 
 
-async def test_references_per_track_are_capped(make_harness: Any, monkeypatch: Any) -> None:
-    monkeypatch.setattr(eng, "MAX_REFERENCES_PER_TRACK", 12)
+async def test_plays_per_track_are_capped(make_harness: Any) -> None:
     h = make_harness()
     passages = []
     for _ in range(3):
@@ -447,12 +446,9 @@ async def test_references_per_track_are_capped(make_harness: Any, monkeypatch: A
         assert h.engine.passage is not None
         passages.append(h.engine.passage.id)
         await h.quiet(GAP)
-    refs = h.references()
-    plays = {p for _, p in refs}
-    # older plays were dropped whole; the latest play is complete
-    assert passages[-1] in plays
-    assert passages[0] not in plays
-    assert len([p for _, p in refs if p == passages[-1]]) >= 9
+    plays = {p for _, p in h.references()}
+    # the two most recent plays stay complete; the oldest went whole
+    assert plays == {passages[1], passages[2]}
 
 
 async def test_audd_hit_on_a_known_track_shows_the_stored_metadata(make_harness: Any) -> None:

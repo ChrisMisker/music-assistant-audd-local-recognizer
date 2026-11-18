@@ -282,38 +282,42 @@ class FingerprintDatabase:
             return None
         return best, json.loads(str(row[0]))
 
-    def prune_track(self, track_id: int, keep_passage_id: str, max_references: int) -> int:
+    def prune_track(self, track_id: int, keep_passage_id: str, max_plays: int) -> int:
         """
-        Keep at most max_references references for a track; return how many were removed.
+        Keep the references of at most max_plays plays (passages) of a track.
 
-        Whole passages (plays) are removed, oldest first, so what remains is a few complete
-        recent plays. The passage keep_passage_id (the one being learned) is never removed.
+        The play being learned (keep_passage_id) always stays; of the others only the most
+        recent ones are kept, so long tracks keep as many plays as short ones. Returns the
+        number of references removed.
         """
         with self._transaction() as db:
-            total = int(
-                db.execute(
-                    "SELECT COUNT(*) FROM reference_windows WHERE track_id=?", (track_id,)
-                ).fetchone()[0]
-            )
-            if total <= max_references:
-                return 0
-            plays = db.execute(
-                """SELECT passage_id, COUNT(*) FROM reference_windows
-                   WHERE track_id=? AND passage_id != ?
-                   GROUP BY passage_id ORDER BY MIN(id)""",
-                (track_id, keep_passage_id),
-            ).fetchall()
+            older = [
+                passage_id
+                for (passage_id,) in db.execute(
+                    """SELECT passage_id FROM reference_windows
+                       WHERE track_id=? AND passage_id != ?
+                       GROUP BY passage_id ORDER BY MAX(id) DESC""",
+                    (track_id, keep_passage_id),
+                )
+            ]
             removed = 0
-            for passage_id, count in plays:
-                if total - removed <= max_references:
-                    break
+            for passage_id in older[max(0, max_plays - 1) :]:
                 # landmarks go with their reference (ON DELETE CASCADE)
-                db.execute(
+                cur = db.execute(
                     "DELETE FROM reference_windows WHERE track_id=? AND passage_id=?",
                     (track_id, passage_id),
                 )
-                removed += int(count)
+                removed += cur.rowcount
         return removed
+
+    def backup_to(self, target: Path) -> None:
+        """Write a consistent copy of the database to target (safe while it is in use)."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            closing(sqlite3.connect(self.path, timeout=30)) as src,
+            closing(sqlite3.connect(target)) as dst,
+        ):
+            src.backup(dst)
 
     def stats(self) -> DatabaseStats:
         """Return row counts."""

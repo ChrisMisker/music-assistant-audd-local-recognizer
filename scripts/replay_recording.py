@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 import wave
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 
@@ -82,31 +82,63 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("folder", type=Path)
     parser.add_argument("--report", action="store_true", help="print the vote report")
+    parser.add_argument(
+        "--keep-later-references",
+        action="store_true",
+        help="keep references learned at/after the recording started (by default they are "
+        "removed from the temporary copy: they come from this very audio and would let the "
+        "replay recognize itself)",
+    )
     args = parser.parse_args()
-    files = sorted(args.folder.glob("*.wav"))
+    files = sorted(args.folder.glob("*_[0-9][0-9].wav"))
     snapshot = args.folder / "fingerprints.sqlite3"
     if not files:
         sys.exit(f"no recordings in {args.folder}")
+    clock = _RecordingClock()
+    handler = logging.StreamHandler(stream := _Capture())
+    handler.setFormatter(clock)
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    began = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "fingerprints.sqlite3"
-        if snapshot.exists():
-            shutil.copyfile(snapshot, db_path)
-        db = FingerprintDatabase(db_path)
-        clock = _RecordingClock()
-        handler = logging.StreamHandler(stream := _Capture())
-        handler.setFormatter(clock)
-        logging.basicConfig(level=logging.INFO, handlers=[handler])
-        began = time.monotonic()
-        for _, group in groupby(files, key=lambda p: p.name[:15]):
-            asyncio.run(_replay(list(group), db, clock))
-        lines = stream.lines
-        print(f"Replayed {len(files)} segments in {time.monotonic() - began:.0f}s", file=sys.stderr)
+        for started, group in groupby(files, key=lambda p: p.name[:15]):
+            db_path = Path(tmp) / f"{started}.sqlite3"
+            at_start = args.folder / f"{started}_db.sqlite3"
+            if at_start.exists():  # the database as it was when this recording started
+                shutil.copyfile(at_start, db_path)
+                print(
+                    f"{started}: using the database copy from the recording's start",
+                    file=sys.stderr,
+                )
+            elif snapshot.exists():
+                shutil.copyfile(snapshot, db_path)
+                if not args.keep_later_references:
+                    removed = _drop_references_since(db_path, args.folder / f"{started}_01.wav")
+                    print(
+                        f"{started}: later snapshot; removed {removed} references learned during "
+                        "the recording (older plays may already have been pruned)",
+                        file=sys.stderr,
+                    )
+            asyncio.run(_replay(list(group), FingerprintDatabase(db_path), clock))
+    lines = stream.lines
+    print(f"Replayed {len(files)} segments in {time.monotonic() - began:.0f}s", file=sys.stderr)
     if args.report:
         from vote_report import parse, report  # noqa: PLC0415
 
         print(report(*parse(lines)))
     else:
         print("".join(lines), end="")
+
+
+def _drop_references_since(db_path: Path, first_file: Path) -> int:
+    """Delete references created at/after the recording's start (created_at is UTC)."""
+    import sqlite3  # noqa: PLC0415
+
+    local_start = datetime.strptime(first_file.name[:15], "%Y%m%d-%H%M%S")  # noqa: DTZ007
+    utc_start = local_start.astimezone().astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        cur = conn.execute("DELETE FROM reference_windows WHERE created_at >= ?", (utc_start,))
+        return cur.rowcount
 
 
 class _Capture:
