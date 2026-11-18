@@ -180,6 +180,18 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
   tracks. Manual cleanup is on the roadmap. The database stays small on its own (at most about
   two plays per track are kept), and it is deleted when you remove the provider.
 
+## Questions
+
+**I bought a new turntable (or cartridge, phono preamp, audio interface). Do I need to start over?**
+No. The local fingerprints describe the music, not your equipment, and are designed to tolerate
+differences in sound, volume and small speed variations. Local recognition may be a bit slower
+at first. If a track isn't recognized locally, it is identified via AudD again and re-learned
+with your new equipment, and older plays are replaced over time automatically. At worst the
+switch costs some extra AudD requests, once per track.
+
+**I play a different pressing of the same album.** Same as above: the same recording is usually
+recognized; otherwise it is identified via AudD once and learned.
+
 ## Troubleshooting
 
 The provider logs what it does and why at INFO level, in the Music Assistant log:
