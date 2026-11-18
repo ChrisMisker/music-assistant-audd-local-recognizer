@@ -30,6 +30,10 @@
 
 ### Fixed
 
+- **Missing album art on some tracks.** When Deezer has no cover it returns an empty placeholder
+  image, which was stored as the artwork, so the player showed none (and a real cover found later
+  could not replace it). The placeholder is now ignored, a real cover replaces it, and stored
+  placeholders are cleaned up at startup.
 - **The album no longer jumps between plays.** AudD often names a different (compilation) album
   on every identification, and each one overwrote the stored metadata. Now the first metadata
   of a track is kept; later results only fill in what is missing (e.g. artwork). The ISRC

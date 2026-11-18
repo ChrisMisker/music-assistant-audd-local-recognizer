@@ -258,3 +258,32 @@ def test_backup_is_a_consistent_copy(db_path: Path) -> None:
     db.add_references(db.upsert_track(OTHER), "q", [(0.0, _landmarks(3, prefix="z"))])
     copied = FingerprintDatabase(copy).stats()
     assert (copied.tracks, copied.references, copied.landmarks) == (1, 1, 7)
+
+
+EMPTY_DEEZER = (
+    "https://cdn-images.dzcdn.net/images/cover/d41d8cd98f00b204e9800998ecf8427e/500x500.jpg"
+)
+
+
+def test_placeholder_artwork_is_replaced_by_real_artwork(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track({**META, "artwork": EMPTY_DEEZER})
+    db.upsert_track({**META, "artwork": "https://art/real.jpg"})
+    stored = db.track_metadata(track)
+    assert stored is not None
+    assert stored["artwork"] == "https://art/real.jpg"
+
+
+def test_reopen_clears_stored_placeholder_artwork(db_path: Path) -> None:
+    import json  # noqa: PLC0415
+
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    with sqlite3.connect(db_path) as conn:  # as written by an older version
+        conn.execute(
+            "UPDATE tracks SET metadata_json=? WHERE id=?",
+            (json.dumps({**META, "artwork": EMPTY_DEEZER}), track),
+        )
+    stored = FingerprintDatabase(db_path).track_metadata(track)
+    assert stored is not None
+    assert stored["artwork"] is None

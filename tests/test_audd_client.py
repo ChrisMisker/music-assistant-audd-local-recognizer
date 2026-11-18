@@ -178,3 +178,10 @@ async def test_client_returns_no_match_with_reason() -> None:
     result = await AudDClient(session, TOKEN).recognize(b"RIFF")  # type: ignore[arg-type]
     assert isinstance(result, AudDNoMatch)
     assert result.reason == "no result"
+
+
+def test_deezer_no_cover_placeholder_is_not_artwork() -> None:
+    empty = "https://cdn-images.dzcdn.net/images/cover/d41d8cd98f00b204e9800998ecf8427e/500x500-000000-80-0-0.jpg"
+    placeholder = {"deezer": {"album": {"cover_big": empty, "cover_medium": empty}}}
+    assert pick_artwork(placeholder) is None
+    assert pick_artwork({**placeholder, "spotify": SPOTIFY}) == "https://spotify/640.jpg"

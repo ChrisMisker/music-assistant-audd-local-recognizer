@@ -65,13 +65,25 @@ def _spotify_artwork(result: dict[str, Any]) -> str | None:
     return str(best["url"])
 
 
+# Deezer answers "no cover" with a placeholder image whose path is the MD5 of an empty string.
+_PLACEHOLDER_ARTWORK = ("d41d8cd98f00b204e9800998ecf8427e",)
+
+
+def is_placeholder_artwork(url: Any) -> bool:
+    """Return True for a missing artwork URL or a known "no cover" placeholder."""
+    return (
+        not isinstance(url, str) or not url.strip() or any(p in url for p in _PLACEHOLDER_ARTWORK)
+    )
+
+
 def _deezer_artwork(result: dict[str, Any]) -> str | None:
     deezer = result.get("deezer")
     album = deezer.get("album") if isinstance(deezer, dict) else None
     if not isinstance(album, dict):
         return None
     for key in ("cover_big", "cover_medium", "cover"):  # cover_big is ~500x500
-        if url := _str(album.get(key)):
+        url = _str(album.get(key))
+        if url and not is_placeholder_artwork(url):
             return url
     return None
 

@@ -14,6 +14,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .audd_client import is_placeholder_artwork
 from .fingerprints import Fingerprints, QueryMatch, score_reference
 
 if TYPE_CHECKING:
@@ -87,6 +88,13 @@ def track_key(metadata: dict[str, Any]) -> str:
     return f"{_normalize(metadata['artist'])}\x1f{_normalize(metadata['title'])}"
 
 
+def _is_empty(field_name: str, value: Any) -> bool:
+    """Return True for a missing value (artwork: also a "no cover" placeholder)."""
+    if field_name == "artwork":
+        return is_placeholder_artwork(value)
+    return value in (None, "")
+
+
 def _dump(metadata: dict[str, Any]) -> str:
     return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
 
@@ -135,7 +143,14 @@ class FingerprintDatabase:
         with self._transaction() as db:
             rows = db.execute("SELECT id, track_key, metadata_json FROM tracks ORDER BY id")
             for track_id, old_key, metadata_json in rows.fetchall():
-                new_key = track_key(json.loads(metadata_json))
+                metadata = json.loads(metadata_json)
+                if metadata.get("artwork") and is_placeholder_artwork(metadata["artwork"]):
+                    # an older version stored Deezer's empty "no cover" image as artwork
+                    metadata["artwork"] = None
+                    db.execute(
+                        "UPDATE tracks SET metadata_json=? WHERE id=?", (_dump(metadata), track_id)
+                    )
+                new_key = track_key(metadata)
                 if new_key == old_key:
                     continue
                 existing = db.execute(
@@ -172,7 +187,7 @@ class FingerprintDatabase:
             stored: dict[str, Any] = json.loads(str(row[1]))
             merged = {**stored}
             for field_name, value in metadata.items():
-                if value not in (None, "") and merged.get(field_name) in (None, ""):
+                if value not in (None, "") and _is_empty(field_name, merged.get(field_name)):
                     merged[field_name] = value
             if merged != stored:
                 db.execute(
