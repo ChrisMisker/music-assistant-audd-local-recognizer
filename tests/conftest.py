@@ -79,6 +79,8 @@ class Harness:
     has_token: bool = True
     publish_result: bool = True
     fingerprint_gate: asyncio.Event | None = None
+    # simulate a new play of vinyl: only every n-th second's landmark repeats (None = all)
+    sparse_every: int | None = None
     audd_gate: asyncio.Event | None = None
     engine: RecognitionEngine = field(init=False)
 
@@ -102,7 +104,12 @@ class Harness:
         self.windows.append(codes)
         if self.fingerprint_gate is not None:
             await self.fingerprint_gate.wait()
-        return {f"s{c // 1000}t{c % 1000}": [i] for i, c in enumerate(codes) if c}
+        keep = self.sparse_every
+        return {
+            f"s{c // 1000}t{c % 1000}": [i]
+            for i, c in enumerate(codes)
+            if c and (keep is None or (c % 1000) % keep == 0)
+        }
 
     async def _audd(self, wav: bytes) -> dict[str, Any] | None:
         with wave.open(io.BytesIO(wav)) as reader:

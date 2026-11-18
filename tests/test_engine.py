@@ -65,14 +65,53 @@ def test_match_confirmer_rules() -> None:
     assert confirmer.consider(_candidate(1, 5, 0.6)) is Decision.ACCEPT_STRONG
     assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.PENDING
     assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.ACCEPT_CONFIRMED
-    # a different track restarts the run
+    # a different track restarts the consecutive run
     assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.PENDING
     assert confirmer.consider(_candidate(2, 3, 0.6)) is Decision.PENDING
-    # random collisions (0-1 votes) never identify, and break the run
+    # random collisions (0-1 votes) never identify
     assert confirmer.consider(_candidate(2, 1, 1.0)) is Decision.REJECT
-    assert confirmer.consider(_candidate(2, 3, 0.6)) is Decision.PENDING
     # low ratio is rejected even with many votes
     assert confirmer.consider(_candidate(3, 50, 0.3)) is Decision.REJECT
+
+
+def test_weak_windows_of_one_track_accumulate() -> None:
+    """The real replay pattern 2, <=1, 2, 4 (v0.5.3 re-test) identifies at the 4th lookup."""
+    confirmer = MatchConfirmer()
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
+    assert confirmer.consider(_candidate(1, 1, 1.0)) is Decision.REJECT
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
+    assert confirmer.consider(_candidate(1, 4, 1.0)) is Decision.ACCEPT_ACCUMULATED
+
+
+def test_accumulation_needs_two_windows_and_the_same_track() -> None:
+    confirmer = MatchConfirmer()
+    assert confirmer.consider(_candidate(1, 4, 1.0)) is Decision.PENDING
+    assert confirmer.consider(_candidate(2, 4, 1.0)) is Decision.PENDING  # other track: no sum
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.ACCEPT_ACCUMULATED  # 4 + 2
+
+
+def test_one_vote_windows_never_accumulate() -> None:
+    confirmer = MatchConfirmer()
+    for _ in range(20):
+        assert confirmer.consider(_candidate(1, 1, 1.0)) is Decision.REJECT
+
+
+def test_old_evidence_expires() -> None:
+    confirmer = MatchConfirmer()
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
+    for _ in range(eng.ACCUMULATION_LOOKUPS - 1):
+        confirmer.record_miss()
+    # the 2-vote window is now older than the last ACCUMULATION_LOOKUPS lookups
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
+    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING  # 2 + 2 = 4 < 6
+
+
+def test_miss_breaks_consecutive_run_but_not_accumulation() -> None:
+    confirmer = MatchConfirmer()
+    assert confirmer.consider(_candidate(1, 3, 1.0)) is Decision.PENDING
+    confirmer.record_miss()
+    # not consecutive any more, but 3 + 3 within the last lookups adds up
+    assert confirmer.consider(_candidate(1, 3, 1.0)) is Decision.ACCEPT_ACCUMULATED
 
 
 # ---------------------------------------------------------------- acceptance A-H
@@ -375,3 +414,40 @@ async def test_early_windows_of_a_closed_passage_are_never_stored(make_harness: 
     await h.play(2, 30)
     assert {t for t, _ in h.references()} == {1}  # only song 2's track (id 1)
     assert all(songs_in(w) for w in h.windows)
+
+
+# ---------------------------------------------------------------- v0.7: accumulation and cap
+
+
+async def test_sparse_replay_is_identified_by_accumulated_evidence(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A replay whose windows each repeat only 2 landmarks is still recognized locally."""
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    h.sparse_every = 6  # every 12 s window now shares exactly 2 landmarks with the references
+    await h.play(1, 40)
+    assert len(h.audd_calls) == 1  # only the first play; the replay never needed AudD
+    hits = local_hits(caplog)
+    assert len(hits) == 1
+    assert "accepted (accumulated)" in hits[0]
+    assert any("Identified Artist 1 - Song 1 via local" in r.getMessage() for r in caplog.records)
+
+
+async def test_references_per_track_are_capped(make_harness: Any, monkeypatch: Any) -> None:
+    monkeypatch.setattr(eng, "MAX_REFERENCES_PER_TRACK", 12)
+    h = make_harness()
+    passages = []
+    for _ in range(3):
+        await h.play(1, 60)
+        assert h.engine.passage is not None
+        passages.append(h.engine.passage.id)
+        await h.quiet(GAP)
+    refs = h.references()
+    plays = {p for _, p in refs}
+    # older plays were dropped whole; the latest play is complete
+    assert passages[-1] in plays
+    assert passages[0] not in plays
+    assert len([p for _, p in refs if p == passages[-1]]) >= 9

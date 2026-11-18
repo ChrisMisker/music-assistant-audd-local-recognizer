@@ -111,7 +111,8 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
   Some recordings have none.
 - **Live audio sources only.** Radio streams without song info are not supported yet.
 - **The learned database can't be edited yet.** You can't view or remove individual learned
-  tracks; the only option is deleting the whole database file. Manual cleanup is on the roadmap.
+  tracks. Manual cleanup is on the roadmap. The database stays small on its own (at most about
+  two plays per track are kept), and it is deleted when you remove the provider.
 
 ## Troubleshooting
 
@@ -124,6 +125,8 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
 | `AudD attempt n/8` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
+| `Identified … via local after 31s` | The track was recognized (locally or via AudD), and when. |
+| `LOCAL CANDIDATE: … votes=2 acc=4 -> pending` | A weak match; votes of consecutive lookups add up (6 needed). |
 | `Learned … references` | Fingerprints stored for future local recognition. |
 | `No AudD API token configured` | Only local recognition is possible. |
 

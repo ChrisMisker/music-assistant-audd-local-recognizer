@@ -9,6 +9,7 @@ uses public MA APIs: MediaType.AUDIO_SOURCE, _run_offloaded and report_stream_me
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,7 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .audd_client import AudDClient
-from .database import DB_FILENAME, FingerprintDatabase
+from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .engine import GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
 
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 STORAGE_SUBDIR = "audd_local_recognizer"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
@@ -68,10 +69,17 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
-        storage_dir = Path(self.mass.storage_path) / STORAGE_SUBDIR
+        storage_dir = self._storage_dir()
         db_path = storage_dir / DB_FILENAME
         await asyncio.to_thread(storage_dir.mkdir, parents=True, exist_ok=True)
-        self._db = await asyncio.to_thread(FingerprintDatabase, db_path)
+        self._db, moved_aside = await asyncio.to_thread(open_database, db_path)
+        if moved_aside is not None:
+            # updates reach users automatically: never stop on an old or damaged database
+            self.logger.warning(
+                "The fingerprint database could not be used (older format or damaged); "
+                "started a new, empty one. The old file was kept as %s",
+                moved_aside,
+            )
         stats = await asyncio.to_thread(self._db.stats)
         self.logger.info(
             "AudD + Local Fingerprints v%s: db=%s tracks=%d references=%d landmarks=%d "
@@ -265,6 +273,17 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             ),
         )
         return accepted is not False
+
+    def _storage_dir(self) -> Path:
+        return Path(self.mass.storage_path) / STORAGE_SUBDIR
+
+    async def unload(self, is_removed: bool = False) -> None:  # noqa: FBT001, FBT002 - MA API
+        """Unload; when the user removes the provider, also delete its fingerprint database."""
+        await super().unload(is_removed)
+        if is_removed:
+            storage_dir = self._storage_dir()
+            await asyncio.to_thread(shutil.rmtree, storage_dir, ignore_errors=True)
+            self.logger.info("Provider removed: deleted its fingerprint database %s", storage_dir)
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""

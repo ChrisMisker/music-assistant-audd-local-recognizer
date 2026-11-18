@@ -11,6 +11,7 @@ from audd_local_recognizer.database import (
     SCHEMA_VERSION,
     FingerprintDatabase,
     SchemaVersionError,
+    open_database,
     track_key,
 )
 
@@ -159,3 +160,60 @@ def test_add_references_batch(db_path: Path) -> None:
     assert [count for _, count in results] == [3, 0, 4]
     assert results[1] == (0, 0)
     assert db.stats().references == 2
+
+
+def test_prune_removes_oldest_plays_whole_and_keeps_current(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    for play in ("old", "middle", "current"):
+        db.add_references(
+            track, play, [(i * 6.0, _landmarks(3, prefix=f"{play}{i}")) for i in range(5)]
+        )
+    assert db.prune_track(track, "current", max_references=10) == 5
+    with sqlite3.connect(db_path) as conn:
+        plays = [r[0] for r in conn.execute("SELECT DISTINCT passage_id FROM reference_windows")]
+        orphans = conn.execute(
+            "SELECT COUNT(*) FROM landmarks WHERE reference_id NOT IN "
+            "(SELECT id FROM reference_windows)"
+        ).fetchone()[0]
+    assert sorted(plays) == ["current", "middle"]
+    assert orphans == 0  # landmarks went with their references
+    # the current play is never removed, even when it alone exceeds the cap
+    assert db.prune_track(track, "current", max_references=2) == 5
+    assert db.stats().references == 5
+
+
+def test_prune_is_per_track(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    a = db.upsert_track(META)
+    b = db.upsert_track(OTHER)
+    db.add_references(a, "pa", [(0.0, _landmarks(3))])
+    db.add_references(b, "pb", [(0.0, _landmarks(3, prefix="b")), (6.0, _landmarks(3, prefix="c"))])
+    assert db.prune_track(a, "now", max_references=1) == 0
+    assert db.prune_track(b, "now", max_references=1) == 2
+    assert db.stats().references == 1
+
+
+def test_open_database_recreates_an_incompatible_file(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE reference_windows (id INTEGER PRIMARY KEY)")
+    db, moved = open_database(db_path)
+    assert moved is not None
+    assert moved.name == "fingerprints.sqlite3.incompatible"
+    assert moved.exists()
+    assert db.stats().tracks == 0
+
+
+def test_open_database_recreates_a_damaged_file(db_path: Path) -> None:
+    db_path.write_bytes(b"this is not sqlite" * 100)
+    db, moved = open_database(db_path)
+    assert moved is not None
+    assert db.stats().references == 0
+
+
+def test_open_database_keeps_a_good_file(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    db.upsert_track(META)
+    reopened, moved = open_database(db_path)
+    assert moved is None
+    assert reopened.stats().tracks == 1

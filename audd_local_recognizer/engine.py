@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
@@ -73,6 +74,17 @@ STRONG_RATIO = 0.60
 CONFIRM_VOTES = 3
 CONFIRM_RATIO = 0.60
 CONFIRMATIONS_REQUIRED = 2
+# Accumulated evidence: on a new play of a record only 2-4 votes per window repeat (vinyl differs
+# a little every play), so weak but genuine windows add up per track over the last few lookups.
+# Accidental collisions gave at most 1 vote in every real test, so they never count.
+ACCUMULATION_LOOKUPS = 4  # ~24 s of lookups
+ACCUMULATION_MIN_VOTES = 2  # a window counts from this many votes (and CONFIRM_RATIO)
+ACCUMULATED_VOTES = 6  # total needed ...
+ACCUMULATED_WINDOWS = 2  # ... from at least this many windows
+
+# At most this many references per track (about two plays of a 3-minute track, ~1 MB). Older
+# plays are removed whole, oldest first; the play being learned is always kept.
+MAX_REFERENCES_PER_TRACK = 60
 
 
 @dataclass(frozen=True)
@@ -124,24 +136,57 @@ class Decision(StrEnum):
 
     ACCEPT_STRONG = "accepted (strong)"
     ACCEPT_CONFIRMED = "accepted (confirmed)"
+    ACCEPT_ACCUMULATED = "accepted (accumulated)"
     PENDING = "pending confirmation"
     REJECT = "rejected"
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether this decision identifies the track."""
+        return self in (
+            Decision.ACCEPT_STRONG,
+            Decision.ACCEPT_CONFIRMED,
+            Decision.ACCEPT_ACCUMULATED,
+        )
 
 
 @dataclass
 class MatchConfirmer:
-    """Decide whether local candidates identify a track."""
+    """
+    Decide whether local candidates identify a track.
+
+    Three ways to accept: one strong window; the same track credible on consecutive lookups;
+    or weak-but-genuine windows of the same track adding up over the last few lookups.
+    """
 
     pending_track_id: int | None = None
     pending_count: int = 0
+    # (track_id, votes) of recent lookups whose best candidate counts as evidence, None otherwise
+    history: deque[tuple[int, int] | None] = field(
+        default_factory=lambda: deque(maxlen=ACCUMULATION_LOOKUPS)
+    )
 
     def reset(self) -> None:
-        """Forget any pending candidate (a miss breaks a consecutive run)."""
+        """Forget everything (after an identification)."""
         self.pending_track_id = None
         self.pending_count = 0
+        self.history.clear()
+
+    def record_miss(self) -> None:
+        """Register a lookup without any candidate: it breaks a consecutive run."""
+        self.pending_track_id = None
+        self.pending_count = 0
+        self.history.append(None)
+
+    def accumulated(self, track_id: int) -> tuple[int, int]:
+        """Return (votes, windows) of the recent evidence for a track."""
+        votes = [v for entry in self.history if entry and entry[0] == track_id for v in entry[1:]]
+        return sum(votes), len(votes)
 
     def consider(self, candidate: QueryMatch) -> Decision:
         """Judge one candidate."""
+        counts = candidate.best_votes >= ACCUMULATION_MIN_VOTES and candidate.ratio >= CONFIRM_RATIO
+        self.history.append((candidate.track_id, candidate.best_votes) if counts else None)
         if candidate.best_votes >= STRONG_VOTES and candidate.ratio >= STRONG_RATIO:
             self.reset()
             return Decision.ACCEPT_STRONG
@@ -154,8 +199,15 @@ class MatchConfirmer:
             if self.pending_count >= CONFIRMATIONS_REQUIRED:
                 self.reset()
                 return Decision.ACCEPT_CONFIRMED
+        else:
+            self.pending_track_id = None
+            self.pending_count = 0
+        if counts:
+            votes, windows = self.accumulated(candidate.track_id)
+            if votes >= ACCUMULATED_VOTES and windows >= ACCUMULATED_WINDOWS:
+                self.reset()
+                return Decision.ACCEPT_ACCUMULATED
             return Decision.PENDING
-        self.reset()
         return Decision.REJECT
 
 
@@ -362,7 +414,7 @@ class RecognitionEngine:
                 passage.short_id,
                 passage.audd_attempts,
             )
-            self._identify(passage, track_id, metadata)
+            self._identify(passage, track_id, metadata, via="AudD")
             # Learn every lookup window of this passage, including the one AudD identified.
             if not passage.early_windows or passage.early_windows[-1][0] != window_end:
                 passage.early_windows.append((window_end, query))
@@ -377,28 +429,34 @@ class RecognitionEngine:
     ) -> bool:
         """Apply the confirmation rules; return True if the passage got identified."""
         if local is None:
-            passage.confirmer.reset()
+            passage.confirmer.record_miss()
             self.logger.debug("LOCAL MISS: no candidate (passage %s)", passage.short_id)
             return False
         candidate, metadata = local
+        evidence_before, _ = passage.confirmer.accumulated(candidate.track_id)
         decision = passage.confirmer.consider(candidate)
-        accepted = decision in (Decision.ACCEPT_STRONG, Decision.ACCEPT_CONFIRMED)
+        if decision.accepted:  # the confirmer resets its history on acceptance
+            evidence = evidence_before + candidate.best_votes
+        else:
+            evidence, _ = passage.confirmer.accumulated(candidate.track_id)
         self.logger.info(
-            "LOCAL %s: %s votes=%d ratio=%.3f shared=%d ref=%d offset=%+d "
-            "ref_passage=%s -> %s (passage %s)",
-            "HIT" if accepted else "CANDIDATE",
+            "LOCAL %s: %s votes=%d acc=%d ratio=%.3f shared=%d ref=%d offset=%+d "
+            "ref_passage=%s at=%.0fs -> %s (passage %s)",
+            "HIT" if decision.accepted else "CANDIDATE",
             describe(metadata),
             candidate.best_votes,
+            evidence,
             candidate.ratio,
             candidate.shared_hashes,
             candidate.reference_id,
             candidate.best_offset,
             candidate.reference_passage_id[:8],
+            passage.seconds,
             decision.value,
             passage.short_id,
         )
-        if accepted:
-            self._identify(passage, candidate.track_id, metadata)
+        if decision.accepted:
+            self._identify(passage, candidate.track_id, metadata, via="local")
             return True
         return False
 
@@ -470,8 +528,18 @@ class RecognitionEngine:
         self.audd_blocked_until = self.stream_seconds + self.audd_backoff_seconds
         self.logger.warning("AudD failed: %s; backing off %ds", reason, self.audd_backoff_seconds)
 
-    def _identify(self, passage: Passage, track_id: int, metadata: dict[str, Any]) -> None:
+    def _identify(
+        self, passage: Passage, track_id: int, metadata: dict[str, Any], *, via: str
+    ) -> None:
         """Mark the passage identified, report metadata and start learning."""
+        self.logger.info(
+            "Identified %s via %s after %.0fs (passage %s, AudD calls %d)",
+            describe(metadata),
+            via,
+            passage.seconds,
+            passage.short_id,
+            passage.audd_attempts,
+        )
         passage.track_id = track_id
         passage.metadata = metadata
         passage.confirmer.reset()
@@ -519,6 +587,7 @@ class RecognitionEngine:
                 max(0.0, windows[0][0] - SAMPLE_SECONDS),
                 windows[-1][0],
             )
+        await self._prune(passage)
 
     async def _store_reference(
         self, passage: Passage, hashes: Fingerprints, window_end: float
@@ -540,4 +609,20 @@ class RecognitionEngine:
                 reference_id,
                 count,
                 window_end - SAMPLE_SECONDS,
+            )
+            await self._prune(passage)
+
+    async def _prune(self, passage: Passage) -> None:
+        """Keep the track within MAX_REFERENCES_PER_TRACK, dropping its oldest plays."""
+        if not self._is_current(passage) or passage.track_id is None:
+            return
+        removed = await self._run_blocking(
+            self._db.prune_track, passage.track_id, passage.id, MAX_REFERENCES_PER_TRACK
+        )
+        if removed:
+            self.logger.info(
+                "Removed %d references of older plays of %s (max %d per track)",
+                removed,
+                describe(passage.metadata),
+                MAX_REFERENCES_PER_TRACK,
             )

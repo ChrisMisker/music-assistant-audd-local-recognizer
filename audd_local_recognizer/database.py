@@ -256,6 +256,39 @@ class FingerprintDatabase:
             return None
         return best, json.loads(str(row[0]))
 
+    def prune_track(self, track_id: int, keep_passage_id: str, max_references: int) -> int:
+        """
+        Keep at most max_references references for a track; return how many were removed.
+
+        Whole passages (plays) are removed, oldest first, so what remains is a few complete
+        recent plays. The passage keep_passage_id (the one being learned) is never removed.
+        """
+        with self._transaction() as db:
+            total = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM reference_windows WHERE track_id=?", (track_id,)
+                ).fetchone()[0]
+            )
+            if total <= max_references:
+                return 0
+            plays = db.execute(
+                """SELECT passage_id, COUNT(*) FROM reference_windows
+                   WHERE track_id=? AND passage_id != ?
+                   GROUP BY passage_id ORDER BY MIN(id)""",
+                (track_id, keep_passage_id),
+            ).fetchall()
+            removed = 0
+            for passage_id, count in plays:
+                if total - removed <= max_references:
+                    break
+                # landmarks go with their reference (ON DELETE CASCADE)
+                db.execute(
+                    "DELETE FROM reference_windows WHERE track_id=? AND passage_id=?",
+                    (track_id, passage_id),
+                )
+                removed += int(count)
+        return removed
+
     def stats(self) -> DatabaseStats:
         """Return row counts."""
         with self._transaction() as db:
@@ -263,3 +296,30 @@ class FingerprintDatabase:
             refs = db.execute("SELECT COUNT(*) FROM reference_windows").fetchone()[0]
             landmarks = db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0]
         return DatabaseStats(int(tracks), int(refs), int(landmarks))
+
+
+def open_database(path: Path) -> tuple[FingerprintDatabase, Path | None]:
+    """
+    Open the database, recreating it when it cannot be used as is.
+
+    Provider updates reach users automatically, so a database written by an incompatible
+    schema version (or a damaged file) must never stop the provider. The old file is moved
+    aside to ``<name>.incompatible`` (replacing an earlier one) and a new, empty database is
+    created. Returns the database and the path of the moved-aside file, if any.
+
+    :param path: The database file.
+    """
+    try:
+        return FingerprintDatabase(path), None
+    except SchemaVersionError:
+        pass
+    except sqlite3.DatabaseError as err:
+        # only an unreadable file; never a transient error such as "database is locked"
+        if "not a database" not in str(err) and "malformed" not in str(err):
+            raise
+    backup = path.with_name(f"{path.name}.incompatible")
+    for suffix in ("", "-wal", "-shm"):
+        source = path.with_name(path.name + suffix)
+        if source.exists():
+            source.replace(backup.with_name(backup.name + suffix))
+    return FingerprintDatabase(path), backup
