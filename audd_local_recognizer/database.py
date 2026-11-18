@@ -196,6 +196,30 @@ class FingerprintDatabase:
                 )
             return int(row[0])
 
+    def artwork_urls(self, host: str) -> list[tuple[int, str]]:
+        """Return (track_id, artwork URL) of tracks whose artwork is on host."""
+        with self._transaction() as db:
+            rows = db.execute("SELECT id, metadata_json FROM tracks").fetchall()
+        result = []
+        for track_id, metadata_json in rows:
+            url = json.loads(str(metadata_json)).get("artwork")
+            if isinstance(url, str) and host in url:
+                result.append((int(track_id), url))
+        return result
+
+    def clear_artwork(self, track_id: int, url: str) -> bool:
+        """Remove a track's artwork if it is still url; return whether it was removed."""
+        with self._transaction() as db:
+            row = db.execute("SELECT metadata_json FROM tracks WHERE id=?", (track_id,)).fetchone()
+            if row is None:
+                return False
+            metadata = json.loads(str(row[0]))
+            if metadata.get("artwork") != url:
+                return False
+            metadata["artwork"] = None
+            db.execute("UPDATE tracks SET metadata_json=? WHERE id=?", (_dump(metadata), track_id))
+        return True
+
     def track_metadata(self, track_id: int) -> dict[str, Any] | None:
         """Return the stored metadata of a track."""
         with self._transaction() as db:

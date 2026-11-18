@@ -117,14 +117,31 @@ class _FakeResponse:
         return None
 
 
+class _FakeHead:
+    def __init__(self, location: str | None) -> None:
+        self.headers = {"Location": location} if location else {}
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 class _FakeSession:
-    def __init__(self, response: _FakeResponse) -> None:
+    def __init__(self, response: _FakeResponse, redirect_to: str | None = None) -> None:
         self.response = response
         self.posts = 0
+        self.heads: list[str] = []
+        self.redirect_to = redirect_to
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.posts += 1
         return self.response
+
+    def head(self, url: str, **kwargs: Any) -> _FakeHead:
+        self.heads.append(url)
+        return _FakeHead(self.redirect_to)
 
 
 async def test_client_http_error_never_contains_token() -> None:
@@ -185,3 +202,34 @@ def test_deezer_no_cover_placeholder_is_not_artwork() -> None:
     placeholder = {"deezer": {"album": {"cover_big": empty, "cover_medium": empty}}}
     assert pick_artwork(placeholder) is None
     assert pick_artwork({**placeholder, "spotify": SPOTIFY}) == "https://spotify/640.jpg"
+
+
+DEEZER_REAL = (
+    "https://cdn-images.dzcdn.net/images/cover/dcae7cea8548c4e2edbf796cd97b7b33/500x500.jpg"
+)
+DEEZER_EMPTY = (
+    "https://cdn-images.dzcdn.net/images/cover/d41d8cd98f00b204e9800998ecf8427e/500x500.jpg"
+)
+
+
+async def test_deezer_cover_that_redirects_to_the_placeholder_is_dropped() -> None:
+    """Seen on real data: an ordinary-looking Deezer cover URL redirected to the empty image."""
+    payload = _success(deezer={"album": {"cover_big": DEEZER_REAL}})
+    session = _FakeSession(_FakeResponse(200, payload), redirect_to=DEEZER_EMPTY)
+    meta = await AudDClient(session, TOKEN).recognize(b"RIFF")  # type: ignore[arg-type]
+    assert isinstance(meta, dict)
+    assert meta["artwork"] is None
+    assert session.heads == [DEEZER_REAL]
+
+
+async def test_real_deezer_cover_is_kept_and_other_sources_are_not_checked() -> None:
+    session = _FakeSession(
+        _FakeResponse(200, _success(deezer={"album": {"cover_big": DEEZER_REAL}}))
+    )
+    meta = await AudDClient(session, TOKEN).recognize(b"RIFF")  # type: ignore[arg-type]
+    assert isinstance(meta, dict)
+    assert meta["artwork"] == DEEZER_REAL
+    apple = _FakeSession(_FakeResponse(200, _success(apple_music=APPLE)))
+    meta = await AudDClient(apple, TOKEN).recognize(b"RIFF")  # type: ignore[arg-type]
+    assert isinstance(meta, dict)
+    assert apple.heads == []

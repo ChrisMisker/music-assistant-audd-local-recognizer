@@ -198,4 +198,31 @@ class AudDClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             msg = f"AudD request failed: {type(err).__name__}"
             raise AudDError(msg) from err
-        return parse_response_detail(payload)
+        result = parse_response_detail(payload)
+        if isinstance(result, dict) and result.get("artwork"):
+            result["artwork"] = await self._real_artwork(result["artwork"])
+        return result
+
+    async def _real_artwork(self, url: str) -> str | None:
+        """Return url, or None when it turns out to be Deezer's empty "no cover" image."""
+        return None if await redirects_to_placeholder(self._session, url) else url
+
+
+async def redirects_to_placeholder(session: aiohttp.ClientSession, url: str) -> bool:
+    """
+    Return True when a Deezer cover URL redirects to Deezer's empty "no cover" image.
+
+    Deezer answers some ordinary-looking cover URLs with a redirect to the placeholder, which
+    only a request reveals. One HEAD request without following redirects; on any problem the
+    answer is False (keep the URL: artwork is best effort). Other hosts are never contacted.
+    """
+    if "dzcdn.net" not in url:
+        return False
+    try:
+        async with session.head(
+            url, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=5)
+        ) as response:
+            location = response.headers.get("Location", "")
+    except aiohttp.ClientError, TimeoutError:
+        return False
+    return bool(location) and is_placeholder_artwork(location)

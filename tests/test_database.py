@@ -287,3 +287,16 @@ def test_reopen_clears_stored_placeholder_artwork(db_path: Path) -> None:
     stored = FingerprintDatabase(db_path).track_metadata(track)
     assert stored is not None
     assert stored["artwork"] is None
+
+
+def test_artwork_listing_and_conditional_clear(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    deezer = "https://cdn-images.dzcdn.net/images/cover/x/500.jpg"
+    a = db.upsert_track({**META, "artwork": deezer})
+    db.upsert_track({**OTHER, "artwork": "https://apple/600.jpg"})
+    assert db.artwork_urls("dzcdn.net") == [(a, deezer)]
+    assert not db.clear_artwork(a, "https://some/other.jpg")  # changed meanwhile: keep
+    assert db.clear_artwork(a, deezer)
+    stored = db.track_metadata(a)
+    assert stored is not None
+    assert stored["artwork"] is None

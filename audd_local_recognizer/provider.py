@@ -19,7 +19,7 @@ from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
-from .audd_client import AudDClient
+from .audd_client import AudDClient, redirects_to_placeholder
 from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import GapSettings, RecognitionEngine
@@ -107,6 +107,21 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 "provider's settings and choose your source (e.g. your turntable) under "
                 "'Audio sources to recognize', or turn on 'Recognize all live audio sources'."
             )
+        self.mass.create_task(self._clean_stored_artwork(), task_name=f"{self.domain}_artwork")
+
+    async def _clean_stored_artwork(self) -> None:
+        """Drop stored Deezer covers that turn out to be Deezer's empty "no cover" image."""
+        removed = 0
+        try:
+            for track_id, url in await asyncio.to_thread(self._db.artwork_urls, "dzcdn.net"):
+                if await redirects_to_placeholder(self.mass.http_session, url) and (
+                    await asyncio.to_thread(self._db.clear_artwork, track_id, url)
+                ):
+                    removed += 1
+        except Exception:
+            self.logger.debug("Artwork check failed", exc_info=True)
+        if removed:
+            self.logger.info("Removed %d empty Deezer covers from the stored metadata", removed)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the provider settings."""

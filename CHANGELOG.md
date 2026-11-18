@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 (unreleased)
+
+### Fixed
+
+- **More missing album art.** Some ordinary-looking Deezer cover links turn out to redirect to
+  Deezer's empty "no cover" image. The provider now checks a Deezer cover once when AudD provides
+  it (a single small request to Deezer's image server) and ignores it when it is empty, so a real
+  cover can fill it in later. Covers stored earlier are checked once at startup.
+
 ## 0.7.0 (2026-11-18)
 
 Much better recognition on real vinyl, a database that stays small, and tools to find out why a
