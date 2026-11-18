@@ -9,7 +9,9 @@ import pytest
 from audd_local_recognizer.audd_client import (
     AudDClient,
     AudDError,
+    AudDNoMatch,
     parse_response,
+    parse_response_detail,
     pick_artwork,
     pick_isrc,
 )
@@ -143,7 +145,7 @@ async def test_client_invalid_json_is_an_error() -> None:
 async def test_client_success() -> None:
     client = AudDClient(_FakeSession(_FakeResponse(200, _success())), TOKEN)  # type: ignore[arg-type]
     meta = await client.recognize(b"RIFF")
-    assert meta is not None
+    assert isinstance(meta, dict)
     assert meta["title"] == "Unforgettable"
 
 
@@ -155,3 +157,24 @@ def test_isrc_from_any_enrichment_block() -> None:
     meta = parse_response(_success(deezer={"isrc": "NLA123400001", **DEEZER}))
     assert meta is not None
     assert meta["isrc"] == "NLA123400001"
+
+
+def test_no_match_says_why() -> None:
+    reasons = [
+        parse_response_detail({"status": "success", "result": None}),
+        parse_response_detail(_success(artist="")),
+        parse_response_detail({"status": "error", "error": {"error_code": 300}}),
+    ]
+    assert all(isinstance(r, AudDNoMatch) for r in reasons)
+    assert [r.reason for r in reasons if isinstance(r, AudDNoMatch)] == [
+        "no result",
+        "result without artist or title",
+        "error 300 (no fingerprint from the sample)",
+    ]
+
+
+async def test_client_returns_no_match_with_reason() -> None:
+    session = _FakeSession(_FakeResponse(200, {"status": "success", "result": None}))
+    result = await AudDClient(session, TOKEN).recognize(b"RIFF")  # type: ignore[arg-type]
+    assert isinstance(result, AudDNoMatch)
+    assert result.reason == "no result"

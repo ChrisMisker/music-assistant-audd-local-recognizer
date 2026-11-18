@@ -32,8 +32,15 @@ from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
-from .audd_client import AudDError
-from .fingerprints import Fingerprints, PcmFormat, QueryMatch, pcm_dbfs, pcm_to_wav
+from .audd_client import AudDError, AudDNoMatch
+from .fingerprints import (
+    Fingerprints,
+    PcmFormat,
+    QueryMatch,
+    pcm_dbfs,
+    pcm_to_wav,
+    sample_stats,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -282,11 +289,12 @@ class RecognitionEngine:
         gap_settings: GapSettings,
         fingerprint: Callable[[bytes], Awaitable[Fingerprints]],
         db: FingerprintDatabase,
-        audd: Callable[[bytes], Awaitable[dict[str, Any] | None]] | None,
+        audd: Callable[[bytes], Awaitable[dict[str, Any] | AudDNoMatch | None]] | None,
         publish: Callable[[dict[str, Any]], bool],
         spawn: Callable[[Coroutine[Any, Any, None]], asyncio.Task[None]],
         logger: logging.Logger,
         run_blocking: Callable[..., Awaitable[Any]] = asyncio.to_thread,
+        save_sample: Callable[[bytes, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -294,6 +302,7 @@ class RecognitionEngine:
         self._fingerprint = fingerprint
         self._db = db
         self._audd = audd
+        self._save_sample = save_sample
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
@@ -406,7 +415,7 @@ class RecognitionEngine:
             if self._judge_local(passage, local):
                 await self._store_early_windows(passage)
                 return
-            metadata = await self._try_audd(passage, pcm)
+            metadata = await self._try_audd(passage, pcm, window_end)
             if metadata is None or not self._is_current(passage):
                 return
             track_id = await self._run_blocking(self._db.upsert_track, metadata)
@@ -481,7 +490,9 @@ class RecognitionEngine:
             return "stream-wide minimum interval"
         return None
 
-    async def _try_audd(self, passage: Passage, pcm: bytes) -> dict[str, Any] | None:
+    async def _try_audd(
+        self, passage: Passage, pcm: bytes, window_end: float
+    ) -> dict[str, Any] | None:
         if self._audd is None:
             if not self._warned_no_token:
                 self._warned_no_token = True
@@ -508,22 +519,50 @@ class RecognitionEngine:
             SAMPLE_SECONDS,
             passage.short_id,
         )
+        wav = pcm_to_wav(pcm, self.fmt)
         try:
-            wav = pcm_to_wav(pcm, self.fmt)
-            metadata = await self._audd(wav)
+            result = await self._audd(wav)
         except asyncio.CancelledError:
             raise
         except AudDError as err:
             self._register_audd_failure(str(err))
+            await self._keep_sample(wav, pcm, passage, window_end, f"error: {err}")
             return None
         except Exception as err:  # noqa: BLE001 - any failure is an AudD failure, never fatal
             self._register_audd_failure(f"{type(err).__name__}: {err}")
+            await self._keep_sample(wav, pcm, passage, window_end, f"error: {type(err).__name__}")
             return None
         self.audd_backoff_seconds = 0
         self.audd_blocked_until = 0.0
-        if metadata is None:
-            self.logger.info("AudD: no match (passage %s); retrying later", passage.short_id)
-        return metadata
+        if result is None or isinstance(result, AudDNoMatch):
+            reason = result.reason if isinstance(result, AudDNoMatch) else "no result"
+            self.logger.info(
+                "AudD: no match: %s (passage %s); retrying later", reason, passage.short_id
+            )
+            await self._keep_sample(wav, pcm, passage, window_end, f"no match: {reason}")
+            return None
+        await self._keep_sample(wav, pcm, passage, window_end, f"hit: {describe(result)}")
+        return result
+
+    async def _keep_sample(
+        self, wav: bytes, pcm: bytes, passage: Passage, window_end: float, outcome: str
+    ) -> None:
+        """Hand an AudD sample to the debug sink (if enabled). Never raises."""
+        if self._save_sample is None:
+            return
+        try:
+            info: dict[str, Any] = {
+                "passage": passage.id,
+                "attempt": passage.audd_attempts,
+                "window_seconds": [round(max(0.0, window_end - SAMPLE_SECONDS), 1), window_end],
+                "outcome": outcome,
+                "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
+                f"{self.fmt.content_type}",
+                **sample_stats(pcm, self.fmt),
+            }
+            await self._save_sample(wav, info)
+        except Exception:
+            self.logger.exception("Could not save the AudD debug sample")
 
     def _register_audd_failure(self, reason: str) -> None:
         self.audd_backoff_seconds = (

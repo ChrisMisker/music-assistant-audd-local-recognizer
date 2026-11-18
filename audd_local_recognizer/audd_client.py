@@ -25,6 +25,18 @@ class AudDError(Exception):
     """A real AudD/HTTP/network failure. Messages never contain the API token."""
 
 
+class AudDNoMatch:
+    """A normal no-match, with the reason (for logs and debugging)."""
+
+    def __init__(self, reason: str) -> None:
+        """Keep the reason, e.g. "no result" or "error 300 (no fingerprint)"."""
+        self.reason = reason
+
+    def __repr__(self) -> str:
+        """Return a readable representation."""
+        return f"AudDNoMatch({self.reason!r})"
+
+
 def _str(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
@@ -115,15 +127,24 @@ def parse_response(payload: Any) -> dict[str, Any] | None:
     Returns metadata on a match, None on a normal no-match (including error 300),
     and raises AudDError on any real API error.
     """
+    result = parse_response_detail(payload)
+    return None if isinstance(result, AudDNoMatch) else result
+
+
+def parse_response_detail(payload: Any) -> dict[str, Any] | AudDNoMatch:
+    """Like parse_response, but a no-match says why."""
     if not isinstance(payload, dict):
         msg = "AudD returned a non-object response"
         raise AudDError(msg)
     if payload.get("status") == "success":
-        return parse_result(payload.get("result"))
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return AudDNoMatch("no result")
+        return parse_result(result) or AudDNoMatch("result without artist or title")
     error = payload.get("error")
     code = error.get("error_code") if isinstance(error, dict) else None
     if code == AUDD_NO_FINGERPRINT_ERROR:
-        return None
+        return AudDNoMatch("error 300 (no fingerprint from the sample)")
     message = error.get("error_message") if isinstance(error, dict) else None
     # Only the code and AudD's message: the payload may echo request params (the token).
     msg = f"AudD error {code}: {message}"
@@ -142,8 +163,8 @@ class AudDClient:
         """Never expose the token, even in debug output."""
         return "AudDClient(api_token=***)"
 
-    async def recognize(self, wav_bytes: bytes) -> dict[str, Any] | None:
-        """Recognize a WAV sample. None means no match; AudDError means failure."""
+    async def recognize(self, wav_bytes: bytes) -> dict[str, Any] | AudDNoMatch:
+        """Recognize a WAV sample. AudDNoMatch means no match; AudDError means failure."""
         form = aiohttp.FormData()
         form.add_field("api_token", self._api_token)
         form.add_field("return", AUDD_RETURN)
@@ -165,4 +186,4 @@ class AudDClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             msg = f"AudD request failed: {type(err).__name__}"
             raise AudDError(msg) from err
-        return parse_response(payload)
+        return parse_response_detail(payload)

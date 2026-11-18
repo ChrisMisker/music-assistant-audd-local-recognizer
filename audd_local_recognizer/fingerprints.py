@@ -11,7 +11,7 @@ import io
 import math
 import wave
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -103,6 +103,42 @@ def pcm_dbfs(pcm: bytes, fmt: PcmFormat) -> float:
     if rms <= 0:
         return SILENCE_FLOOR_DBFS
     return max(SILENCE_FLOOR_DBFS, 20.0 * math.log10(rms / 32767.0))
+
+
+def sample_stats(pcm: bytes, fmt: PcmFormat) -> dict[str, float | None]:
+    """
+    Measure a sample for debugging: level, clipping and left/right correlation.
+
+    lr_correlation near 1 is normal; near 0 or negative means the channels differ or are out of
+    phase, so the mono sum (what AudD gets) loses content.
+    """
+    mono = pcm_to_mono_s16(pcm, fmt).astype(np.float64)
+    stats: dict[str, float | None] = {
+        "rms_dbfs": round(pcm_dbfs(pcm, fmt), 1),
+        "peak_dbfs": None,
+        "clipped_ratio": None,
+        "lr_correlation": None,
+    }
+    if mono.size:
+        peak = float(np.max(np.abs(mono)))
+        stats["peak_dbfs"] = round(20 * math.log10(peak / 32767.0), 1) if peak else None
+        stats["clipped_ratio"] = round(float(np.mean(np.abs(mono) >= 32766)), 5)
+    if fmt.channels == 2:
+        single = replace(fmt, channels=1)
+        left = pcm_to_mono_s16(_channel(pcm, fmt, 0), single).astype(np.float64)
+        right = pcm_to_mono_s16(_channel(pcm, fmt, 1), single).astype(np.float64)
+        if left.size > 1 and np.std(left) > 0 and np.std(right) > 0:
+            stats["lr_correlation"] = round(float(np.corrcoef(left, right)[0, 1]), 3)
+    return stats
+
+
+def _channel(pcm: bytes, fmt: PcmFormat, index: int) -> bytes:
+    """Return the raw bytes of one channel of interleaved stereo PCM."""
+    frame = fmt.sample_width * fmt.channels
+    usable = len(pcm) - len(pcm) % frame
+    raw = np.frombuffer(pcm[:usable], dtype=np.uint8).reshape(-1, frame)
+    start = index * fmt.sample_width
+    return raw[:, start : start + fmt.sample_width].tobytes()
 
 
 def pcm_to_wav(pcm: bytes, fmt: PcmFormat) -> bytes:

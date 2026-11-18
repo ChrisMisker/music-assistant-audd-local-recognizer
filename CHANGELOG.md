@@ -41,6 +41,13 @@
   enough to show a wrong title. A match now counts each distinct fingerprint only once. Found
   in a real test with Phil Collins' *In the Air Tonight*; no wrong title was shown.
 
+### Troubleshooting
+
+- New advanced setting **"Save AudD samples for debugging"** (off by default): keeps the last 40
+  samples sent to AudD as WAV, with their outcome and measurements (level, clipping, left/right
+  correlation), in the provider's data folder. Useful to hear why AudD misses a track.
+- A no-match now logs AudD's reason (`no result`, `error 300`, …).
+
 ### Hardening
 
 - A learned window with an abnormal number of fingerprints (over 2,000; real music has ~260) is

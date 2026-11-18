@@ -27,6 +27,10 @@
     "minimum_gap_seconds": {
       "label": "Minimale stilte tussen nummers (seconden)",
       "description": "Hoe lang de stilte moet duren om als nieuw nummer te tellen."
+    },
+    "save_audd_samples": {
+      "label": "AudD-fragmenten bewaren voor foutopsporing",
+      "description": "Bewaar de laatste 40 audiofragmenten die naar AudD zijn gestuurd, met de uitkomst en metingen, in de datamap van de provider (debug/). Alleen voor het oplossen van problemen; ze blijven op deze server."
     }
   }
 }

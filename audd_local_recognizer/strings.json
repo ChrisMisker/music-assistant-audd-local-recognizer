@@ -27,6 +27,10 @@
     "minimum_gap_seconds": {
       "label": "Minimum track gap (seconds)",
       "description": "How long the silence must last to count as a track change."
+    },
+    "save_audd_samples": {
+      "label": "Save AudD samples for debugging",
+      "description": "Keep the last 40 audio samples sent to AudD, with their outcome and measurements, in the provider's data folder (debug/). Only for troubleshooting; they stay on this server."
     }
   }
 }

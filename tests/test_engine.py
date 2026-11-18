@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from audd_local_recognizer import engine as eng
-from audd_local_recognizer.audd_client import AudDError
+from audd_local_recognizer.audd_client import AudDError, AudDNoMatch
 from audd_local_recognizer.engine import (
     Decision,
     GapDetector,
@@ -537,3 +537,40 @@ async def test_g_late_result_leaves_pending_evidence_of_new_passage_alone(
     await asyncio.wait_for(late, 5)
     assert list(new_passage.confirmer.history) == history_before
     assert h.published == []
+
+
+# ---------------------------------------------------------------- debug samples
+
+
+async def test_audd_samples_are_kept_with_outcome_and_measurements(make_harness: Any) -> None:
+    h = make_harness(samples=[], audd_script=[None, AudDError("AudD HTTP 500")])
+    await h.play(1, 140)  # 24 s no match, 54 s error -> backoff, 114 s hit
+    assert h.samples is not None
+    outcomes = [info["outcome"] for _, info in h.samples]
+    assert outcomes[0] == "no match: no result"
+    assert outcomes[1].startswith("error: AudD HTTP 500")
+    assert outcomes[-1] == "hit: Artist 1 - Song 1"
+    wav, info = h.samples[0]
+    assert wav.startswith(b"RIFF")
+    assert info["attempt"] == 1
+    assert info["window_seconds"] == [12.0, 24.0]
+    assert {"rms_dbfs", "peak_dbfs", "clipped_ratio", "lr_correlation"} <= set(info)
+
+
+async def test_no_samples_kept_when_the_option_is_off(make_harness: Any) -> None:
+    h = make_harness()
+    await h.play(1, 30)
+    assert h.samples is None
+    assert h.engine._save_sample is None
+
+
+async def test_no_match_reason_is_logged(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(audd_script=[AudDNoMatch("error 300 (no fingerprint from the sample)")])
+    await h.play(1, 30)
+    assert any(
+        "AudD: no match: error 300 (no fingerprint from the sample)" in r.getMessage()
+        for r in caplog.records
+    )

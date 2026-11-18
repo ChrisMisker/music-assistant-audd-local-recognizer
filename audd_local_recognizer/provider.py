@@ -21,6 +21,7 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .audd_client import AudDClient
 from .database import DB_FILENAME, FingerprintDatabase, open_database
+from .debug_samples import write_debug_sample
 from .engine import GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 
 VERSION = "0.7.0"
 STORAGE_SUBDIR = "audd_local_recognizer"
+DEBUG_SUBDIR = "debug"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
@@ -42,6 +44,7 @@ CONF_AUDD_API_TOKEN = "audd_api_token"  # noqa: S105 - the name of a setting, no
 CONF_SILENCE_DBFS = "silence_threshold_dbfs"
 CONF_RESUME_DBFS = "resume_threshold_dbfs"
 CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
+CONF_SAVE_SAMPLES = "save_audd_samples"
 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
@@ -158,6 +161,19 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 advanced=True,
                 label="Minimum track gap (seconds)",
             ),
+            ConfigEntry(
+                key=CONF_SAVE_SAMPLES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+                label="Save AudD samples for debugging",
+                description=(
+                    "Keep the last 40 audio samples sent to AudD, with their outcome and "
+                    "measurements, in the provider's data folder (debug/). Only for "
+                    "troubleshooting; they stay on this server."
+                ),
+            ),
         )
 
     async def _audio_source_options(self) -> list[ConfigValueOption]:
@@ -266,8 +282,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             publish=lambda metadata: self._publish(session_id, metadata),
             spawn=lambda coro: self.mass.create_task(coro, task_name=f"{self.domain}_recognition"),
             logger=self.logger,
+            save_sample=self._save_sample if self.config.get_value(CONF_SAVE_SAMPLES) else None,
         )
         return True
+
+    async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
+        await asyncio.to_thread(write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info)
 
     async def _fingerprint(self, pcm: bytes, fmt: PcmFormat) -> Fingerprints:
         # _run_offloaded keeps CPU work below playback (MA's analysis pool + solo lock).

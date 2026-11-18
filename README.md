@@ -158,6 +158,7 @@ Things to keep in mind:
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
+| *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 
 The defaults were tuned on a real turntable. Only change them if track changes are missed
 (raise the silence threshold) or detected inside quiet passages (lower it, or raise the
@@ -218,6 +219,7 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `Identified … via local after 31s` | The track was recognized (locally or via AudD), and when. |
 | `LOCAL CANDIDATE: … votes=2 acc=4 -> pending` | A weak match; votes of consecutive lookups add up (6 needed). |
 | `Learned … references` | Fingerprints stored for future local recognition. |
+| `AudD: no match: …` | AudD found nothing; the reason follows (e.g. `no result`, `error 300`). |
 | `No AudD API token configured` | Only local recognition is possible. |
 
 If nothing is recognized, check that the source allows audio analysis, that the provider

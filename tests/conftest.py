@@ -84,6 +84,8 @@ class Harness:
     audd_gate: asyncio.Event | None = None
     # holds the database lookup (find_best_match) until set: a slow database
     lookup_gate: asyncio.Event | None = None
+    # collect AudD debug samples (None = the option is off)
+    samples: list[tuple[bytes, dict[str, Any]]] | None = None
     engine: RecognitionEngine = field(init=False)
 
     def build(self, logger: logging.Logger) -> Harness:
@@ -98,8 +100,13 @@ class Harness:
             spawn=lambda coro: asyncio.get_running_loop().create_task(coro),
             logger=logger,
             run_blocking=self._run_blocking,
+            save_sample=self._save_sample if self.samples is not None else None,
         )
         return self
+
+    async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
+        assert self.samples is not None
+        self.samples.append((wav, info))
 
     async def _run_blocking(self, func: Any, *args: Any) -> Any:
         if self.lookup_gate is not None and getattr(func, "__name__", "") == "find_best_match":
@@ -118,7 +125,7 @@ class Harness:
             if c and (keep is None or (c % 1000) % keep == 0)
         }
 
-    async def _audd(self, wav: bytes) -> dict[str, Any] | None:
+    async def _audd(self, wav: bytes) -> Any:
         with wave.open(io.BytesIO(wav)) as reader:
             frames = reader.readframes(reader.getnframes())
         codes = decode_codes(frames)  # s16 -> WAV round-trips exactly (rounded conversion)
@@ -129,6 +136,8 @@ class Harness:
             scripted = self.audd_script.pop(0)
             if isinstance(scripted, Exception):
                 raise scripted
+            if not isinstance(scripted, dict) and scripted is not None:
+                return scripted  # e.g. an AudDNoMatch with a reason
             if scripted is None:
                 return None
         songs = {c // 1000 for c in codes if c}

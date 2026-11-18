@@ -13,3 +13,5 @@ __pycache__/
 .DS_Store
 # the data of a locally started server
 .data/
+# AudD debug samples fetched from the server (audio of your records: never commit)
+debug-samples/

@@ -18,6 +18,7 @@ from audd_local_recognizer.fingerprints import (
     pcm_to_mono_s16,
     pcm_to_wav,
     resample_s16,
+    sample_stats,
     score_reference,
 )
 
@@ -187,3 +188,25 @@ def test_distinct_hashes_still_vote_together() -> None:
     shared, offset, votes, ratio = score_reference(query, stored)
     assert (shared, offset, votes) == (3, 5, 3)
     assert ratio == 1.0
+
+
+def _stereo(left: np.ndarray, right: np.ndarray) -> bytes:
+    out = np.empty(2 * left.size, dtype="<f4")
+    out[0::2], out[1::2] = left, right
+    return out.tobytes()
+
+
+def test_sample_stats_detect_phase_problems_and_clipping() -> None:
+    tone = _tone(1)
+    same = sample_stats(_stereo(tone, tone), SENDSPIN)
+    assert same["lr_correlation"] == 1.0
+    assert same["clipped_ratio"] == 0.0
+    inverted = sample_stats(_stereo(tone, -tone), SENDSPIN)
+    assert inverted["lr_correlation"] == -1.0
+    assert inverted["rms_dbfs"] == -120.0  # the mono sum AudD gets is silent
+    loud = np.clip(tone * 4, -1, 1).astype(np.float32)
+    clipped = sample_stats(_stereo(loud, loud), SENDSPIN)
+    assert clipped["clipped_ratio"] is not None
+    assert clipped["clipped_ratio"] > 0.3
+    mono = sample_stats(tone.astype("<f4").tobytes(), PcmFormat(44100, 1, 4, "f32le"))
+    assert mono["lr_correlation"] is None
