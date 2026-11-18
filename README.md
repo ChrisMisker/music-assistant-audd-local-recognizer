@@ -50,13 +50,18 @@ The more you play, the fewer AudD requests are needed.
 ## What to expect
 
 Recognition is not instant: the provider needs to hear a piece of each track first. Measured on
-a real turntable (November 2026):
+a real turntable (November 2026, two records, 22 plays):
 
 | Situation | Title appears after | AudD requests |
 |---|---|---|
-| **A track you have never played** (identified by AudD) | usually **45–60 seconds** into the track | usually 1–3 |
-| **A track you have played before** (recognized locally) | usually **40–50 seconds**, sometimes sooner | 0–1 |
-| **A quiet or unusual intro**, or a rare recording | sometimes a few minutes; occasionally not at all | up to 8 per track |
+| **A track you have never played** (identified by AudD) | usually **30–90 seconds** (median ~55 s) | usually 1–3 |
+| **A track you have played before** (recognized locally) | usually **20–50 seconds** (median ~40 s) | 0–1 |
+| **A track AudD doesn't identify** | not shown; the provider keeps trying sparingly | 3–5 for a normal track |
+
+**Honest note:** in these tests AudD did not identify about **4 in 10 tracks**, including some
+well-known recordings, and a track it identified once was sometimes missed on the next play. We
+are investigating why (it may be the quality of the samples from vinyl). A track that is never
+identified is also never learned, so it won't be recognized locally either.
 
 Why it takes this long:
 - The first look happens after **12 seconds** of a track; after that every 6 seconds.
