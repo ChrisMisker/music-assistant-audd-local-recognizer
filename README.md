@@ -14,6 +14,22 @@ recognized **locally**, without any external service.
 > not in a stable or beta release yet. It will work on stable once Music Assistant ships that
 > feature there.
 
+## What's new
+
+**0.7.0** *(in testing, not released yet)*
+- Faster local recognition when you replay a record: weak matches now add up over consecutive
+  lookups.
+- The database stays small: at most about two plays are kept per track (see
+  [Disk space](#disk-space)).
+- An update can never stop the provider because of an old or damaged database; it starts a new
+  one and logs a warning.
+- Removing the provider also removes its database.
+
+**0.6.0**: first public release.
+
+All changes: [CHANGELOG.md](CHANGELOG.md) and the
+[GitHub releases](https://github.com/ChrisMisker/music-assistant-audd-local-recognizer/releases).
+
 ## How it works
 
 1. You play a record through a live source in Music Assistant (for example **Sendspin Source**).
@@ -68,6 +84,32 @@ settings in Music Assistant.
   uploaded or shared.
 - Music Assistant shows the recognized metadata on the player and does not store it in its
   library.
+
+## Disk space
+
+The local fingerprint database lives on your Music Assistant server, in
+`audd_local_recognizer/fingerprints.sqlite3` in its data folder (`/data` in the Home Assistant
+add-on). **It grows as you play new music, and it can grow quickly**:
+
+- each play of a ~3-minute track adds roughly **0.5 MB**;
+- from version 0.7 each track keeps at most about **two plays (~1 MB)**; older plays are removed
+  automatically. (In 0.6.0 there is no limit yet: every play adds to the database.)
+
+Rough upper limits from 0.7:
+
+| Your music | Database size (max) |
+|---|---|
+| 10 records (~100 tracks) | ~100 MB |
+| 100 records (~1,000 tracks) | ~1 GB |
+| 500 records (~5,000 tracks) | ~5 GB |
+
+Things to keep in mind:
+- **Home Assistant backups** include the Music Assistant add-on's data, so the database makes
+  your backups larger too.
+- On a small system (e.g. a Raspberry Pi or Home Assistant Green/Blue with limited storage), keep
+  an eye on free disk space if you play a large collection.
+- **Removing the provider** in Music Assistant deletes the database. There is no way yet to
+  remove individual tracks (planned).
 
 ## Settings
 
