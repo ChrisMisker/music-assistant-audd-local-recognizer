@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import io
 import math
+import warnings
 import wave
 from collections import Counter
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from functools import cache
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -193,11 +195,34 @@ def resample_s16(samples: np.ndarray, source_rate: int, target_rate: int) -> np.
     return result
 
 
+def import_quietly(module: str) -> Any:
+    """
+    Import a module without its SyntaxWarnings.
+
+    pydub (an audalign dependency) has regex strings with invalid escapes (a backslash before
+    "(") that Python 3.14 reports as SyntaxWarning when it compiles them, i.e. on the first load
+    in a new MA container: four harmless "invalid escape sequence" lines in the MA log. Other
+    warnings still show.
+    """
+    import importlib  # noqa: PLC0415
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return importlib.import_module(module)
+
+
+@cache
+def _audalign() -> tuple[Any, Any]:
+    """Return audalign's (FingerprintConfig, fingerprinter), imported once and quietly."""
+    # Imported lazily: audalign pulls in a large dependency tree.
+    config_module = import_quietly("audalign.config.fingerprint")
+    fingerprinter = import_quietly("audalign.recognizers.fingerprint.fingerprinter")
+    return config_module.FingerprintConfig, fingerprinter
+
+
 def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
     """Return the full Audalign Panako hashes for one PCM window (CPU heavy: offload it)."""
-    # Imported lazily: audalign pulls in a large dependency tree.
-    from audalign.config.fingerprint import FingerprintConfig  # noqa: PLC0415
-    from audalign.recognizers.fingerprint import fingerprinter  # noqa: PLC0415
+    FingerprintConfig, fingerprinter = _audalign()  # noqa: N806 - a class
 
     samples = resample_s16(pcm_to_mono_s16(pcm, fmt), fmt.sample_rate, FINGERPRINT_SAMPLE_RATE)
     config = FingerprintConfig()

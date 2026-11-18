@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import wave
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -22,6 +23,9 @@ from audd_local_recognizer.fingerprints import (
     sample_stats,
     score_reference,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SENDSPIN = PcmFormat(44100, 2, 4, "f32le")  # the real live format observed
 
@@ -235,3 +239,21 @@ def test_wav_with_speed_correction() -> None:
     with wave.open(io.BytesIO(pcm_to_wav(pcm, SENDSPIN, -2.0))) as reader:
         assert reader.getframerate() == 44100  # the rate stays; the audio is longer
         assert reader.getnframes() == pytest.approx(44100 / 0.98, rel=0.002)
+
+
+def test_import_quietly_hides_dependency_syntax_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pydub's invalid escape sequences must not reach the MA log on a first import."""
+    import warnings  # noqa: PLC0415
+
+    from audd_local_recognizer.fingerprints import import_quietly  # noqa: PLC0415
+
+    (tmp_path / "noisy_dependency.py").write_text('PATTERN = "\\("\n')
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr("sys.dont_write_bytecode", True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module = import_quietly("noisy_dependency")
+    assert module.PATTERN == "\\("
+    assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
