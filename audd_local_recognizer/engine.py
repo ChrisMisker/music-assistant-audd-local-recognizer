@@ -73,8 +73,10 @@ AUDD_MAX_ATTEMPTS_PER_PASSAGE = 8
 AUDD_MIN_INTERVAL_SECONDS = 30
 # Stream-wide exponential backoff, only for real HTTP/network/API failures.
 # When AudD is due but the latest local lookup already points at a known track (a candidate with
-# >= ACCUMULATION_MIN_VOTES; accidental candidates have 1), wait one more lookup for local
-# confirmation instead of spending an AudD call. At most this many times per passage.
+# >= POSTPONE_MIN_VOTES), wait one more lookup for local confirmation instead of spending an AudD
+# call. At most MAX_AUDD_POSTPONES times per passage. Offline on real vinyl (Barry White replay):
+# genuine candidates at 24 s had 3 votes, accidental ones up to 2, so 2 postponed for nothing.
+POSTPONE_MIN_VOTES = 3
 MAX_AUDD_POSTPONES = 2
 # "Fast start": windows that end within the first fast_start_seconds of a passage are
 # fingerprinted at 1/4 instead of 1/16 (a superset), when learning and when looking up, so a
@@ -513,8 +515,10 @@ class RecognitionEngine:
             return False
         history = passage.confirmer.history
         latest = history[-1] if history else None
-        if latest is None or self._audd_wait_reason(passage) is not None:
-            return False  # no promising candidate, or AudD isn't due anyway
+        if latest is None or latest[1] < POSTPONE_MIN_VOTES:
+            return False  # no promising candidate
+        if self._audd_wait_reason(passage) is not None:
+            return False  # AudD isn't due anyway
         passage.audd_postponed += 1
         votes, _ = passage.confirmer.accumulated(latest[0])
         self.logger.info(

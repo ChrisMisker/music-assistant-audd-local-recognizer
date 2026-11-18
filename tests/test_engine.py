@@ -613,7 +613,9 @@ async def test_audd_is_postponed_only_for_a_promising_candidate(make_harness: An
     assert not h.engine._postpone_audd(passage)  # no candidate yet
     passage.confirmer.consider(_candidate(7, 1, 1.0))  # an accidental 1-vote candidate
     assert not h.engine._postpone_audd(passage)
-    passage.confirmer.consider(_candidate(7, 2, 1.0))  # a promising candidate
+    passage.confirmer.consider(_candidate(7, 2, 1.0))  # 2 votes: accidental ones reach that
+    assert not h.engine._postpone_audd(passage)
+    passage.confirmer.consider(_candidate(7, 3, 1.0))  # a promising candidate
     assert h.engine._postpone_audd(passage)
     assert h.engine._postpone_audd(passage)
     assert not h.engine._postpone_audd(passage)  # at most MAX_AUDD_POSTPONES per passage
