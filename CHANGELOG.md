@@ -11,8 +11,8 @@ White side, 0.7 recognized 1 of 6 tracks locally; 0.8 recognized 5 of 6.
 
 - **Disk space:** the new fast start (on by default) stores the first 30 seconds of every track
   with more fingerprints: about **35 % more disk space** for the fingerprint database (roughly
-  0.7 MB per play of a 3-minute track instead of 0.5 MB). Turn "Fast start" off in the provider settings if you
-  prefer a smaller database.
+  0.7 MB per play of a 3-minute track instead of 0.5 MB). Turn off "Faster recognition at the
+  start of known tracks" in the provider settings if you prefer a smaller database.
 - Nothing else to do: your existing database is kept, and tracks you learned before also benefit
   (fully from the next time you play them).
 
