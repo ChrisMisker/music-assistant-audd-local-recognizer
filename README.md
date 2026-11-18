@@ -215,9 +215,15 @@ recognized; otherwise it is identified via AudD once and learned.
 
 **AudD doesn't recognize many of my tracks, even well-known ones.** Check your turntable's
 speed: AudD is sensitive to it, while local recognition is not. In our tests a turntable that ran
-fast made AudD miss about 4 in 10 tracks; a sample played 2 % slower was recognized. Measure the
-speed with an RPM/strobe app on your phone and adjust the turntable if you can, or set **Speed
-correction for AudD** (advanced setting), e.g. to -2.
+a little fast made AudD miss about 4 in 10 tracks; samples played 2 % slower were recognized.
+1. Measure the speed with a phone app, e.g. the free
+   [Turntable Speed](https://apps.apple.com/app/id1604670976) for iPhone: put the phone on the
+   platter while it turns. It shows the average speed, e.g. *33.61 rpm / +0.82 %*.
+2. If you can, adjust the turntable's speed (many have a speed trim screw); this also makes your
+   records sound right.
+3. Otherwise set **Speed correction for AudD** (advanced setting) to the opposite of the
+   measured deviation, e.g. **-0.8** for +0.82 %. If AudD still misses many tracks, try **-2**
+   (that worked best in our tests).
 
 ## Troubleshooting
 
