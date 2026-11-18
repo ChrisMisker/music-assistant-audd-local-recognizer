@@ -338,7 +338,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         self._engines[session_id] = RecognitionEngine(
             fmt=fmt,
             gap_settings=GapSettings(float(silence), float(resume), float(min_gap)),
-            fingerprint=lambda pcm: self._fingerprint(pcm, fmt),
+            fingerprint=lambda pcm, divisor: self._fingerprint(pcm, fmt, divisor),
             db=self._db,
             audd=audd,
             publish=lambda metadata: self._publish(session_id, metadata),
@@ -401,9 +401,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
         await asyncio.to_thread(write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info)
 
-    async def _fingerprint(self, pcm: bytes, fmt: PcmFormat) -> Fingerprints:
+    async def _fingerprint(self, pcm: bytes, fmt: PcmFormat, divisor: int) -> Fingerprints:
         # _run_offloaded keeps CPU work below playback (MA's analysis pool + solo lock).
-        hashes: Fingerprints = await self._run_offloaded(fingerprint_window, pcm, fmt)
+        hashes: Fingerprints = await self._run_offloaded(fingerprint_window, pcm, fmt, divisor)
         return hashes
 
     def _publish(self, session_id: str, metadata: dict[str, Any]) -> bool:

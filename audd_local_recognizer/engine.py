@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from .audd_client import AudDError, AudDNoMatch
 from .fingerprints import (
+    DENSITY_DIVISOR,
     Fingerprints,
     PcmFormat,
     QueryMatch,
@@ -71,6 +72,14 @@ AUDD_MAX_ATTEMPTS_PER_PASSAGE = 8
 # Stream-wide: never two AudD calls closer than this, whatever the passages do.
 AUDD_MIN_INTERVAL_SECONDS = 30
 # Stream-wide exponential backoff, only for real HTTP/network/API failures.
+# When AudD is due but the latest local lookup already points at a known track (a candidate with
+# >= ACCUMULATION_MIN_VOTES; accidental candidates have 1), wait one more lookup for local
+# confirmation instead of spending an AudD call. At most this many times per passage.
+MAX_AUDD_POSTPONES = 2
+# "Fast start": windows that end within the first fast_start_seconds of a passage are
+# fingerprinted at 1/4 instead of 1/16 (a superset), when learning and when looking up, so a
+# known track is recognized sooner from its start. Costs disk space; off unless configured.
+FAST_START_DENSITY_DIVISOR = 4
 AUDD_INITIAL_BACKOFF_SECONDS = 60
 AUDD_MAX_BACKOFF_SECONDS = 900
 
@@ -238,6 +247,7 @@ class Passage:
     next_learn_at: float = 0.0
     learning_capped: bool = False
     audd_attempts: int = 0
+    audd_postponed: int = 0
     next_audd_at: float = float(AUDD_FIRST_ATTEMPT_SECONDS)
     early_windows: list[tuple[float, Fingerprints]] = field(default_factory=list)
 
@@ -288,7 +298,7 @@ class RecognitionEngine:
         *,
         fmt: PcmFormat,
         gap_settings: GapSettings,
-        fingerprint: Callable[[bytes], Awaitable[Fingerprints]],
+        fingerprint: Callable[[bytes, int], Awaitable[Fingerprints]],
         db: FingerprintDatabase,
         audd: Callable[[bytes], Awaitable[dict[str, Any] | AudDNoMatch | None]] | None,
         publish: Callable[[dict[str, Any]], bool],
@@ -297,6 +307,8 @@ class RecognitionEngine:
         run_blocking: Callable[..., Awaitable[Any]] = asyncio.to_thread,
         save_sample: Callable[[bytes, dict[str, Any]], Awaitable[None]] | None = None,
         audd_speed_percent: float = 0.0,
+        postpone_audd: bool = False,
+        fast_start_seconds: float = 0.0,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -306,6 +318,8 @@ class RecognitionEngine:
         self._audd = audd
         self._save_sample = save_sample
         self.audd_speed_percent = audd_speed_percent
+        self.postpone_audd = postpone_audd
+        self.fast_start_seconds = fast_start_seconds
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
@@ -407,7 +421,7 @@ class RecognitionEngine:
 
     async def _recognize(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         try:
-            query = await self._fingerprint(pcm)
+            query = await self._fingerprint(pcm, self._divisor(window_end))
             if not self._is_current(passage):
                 return
             if len(passage.early_windows) < MAX_EARLY_WINDOWS:
@@ -418,29 +432,36 @@ class RecognitionEngine:
             if self._judge_local(passage, local):
                 await self._store_early_windows(passage)
                 return
-            metadata = await self._try_audd(passage, pcm, window_end)
-            if metadata is None or not self._is_current(passage):
-                return
-            track_id = await self._run_blocking(self._db.upsert_track, metadata)
-            # show what is stored: a known track keeps its first metadata (see upsert_track)
-            metadata = await self._run_blocking(self._db.track_metadata, track_id) or metadata
-            if not self._is_current(passage):
-                return
-            self.logger.info(
-                "AudD HIT: %s (passage %s, attempt %d)",
-                describe(metadata),
-                passage.short_id,
-                passage.audd_attempts,
-            )
-            self._identify(passage, track_id, metadata, via="AudD")
-            # Learn every lookup window of this passage, including the one AudD identified.
-            if not passage.early_windows or passage.early_windows[-1][0] != window_end:
-                passage.early_windows.append((window_end, query))
-            await self._store_early_windows(passage)
+            if not self._postpone_audd(passage):
+                await self._recognize_with_audd(passage, pcm, query, window_end)
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Recognition failed (passage %s)", passage.short_id)
+
+    async def _recognize_with_audd(
+        self, passage: Passage, pcm: bytes, query: Fingerprints, window_end: float
+    ) -> None:
+        """Ask AudD (if allowed); on a hit identify the passage and learn its windows."""
+        metadata = await self._try_audd(passage, pcm, window_end)
+        if metadata is None or not self._is_current(passage):
+            return
+        track_id = await self._run_blocking(self._db.upsert_track, metadata)
+        # show what is stored: a known track keeps its first metadata (see upsert_track)
+        metadata = await self._run_blocking(self._db.track_metadata, track_id) or metadata
+        if not self._is_current(passage):
+            return
+        self.logger.info(
+            "AudD HIT: %s (passage %s, attempt %d)",
+            describe(metadata),
+            passage.short_id,
+            passage.audd_attempts,
+        )
+        self._identify(passage, track_id, metadata, via="AudD")
+        # Learn every lookup window of this passage, including the one AudD identified.
+        if not passage.early_windows or passage.early_windows[-1][0] != window_end:
+            passage.early_windows.append((window_end, query))
+        await self._store_early_windows(passage)
 
     def _judge_local(
         self, passage: Passage, local: tuple[QueryMatch, dict[str, Any]] | None
@@ -477,6 +498,34 @@ class RecognitionEngine:
             self._identify(passage, candidate.track_id, metadata, via="local")
             return True
         return False
+
+    def _divisor(self, window_end: float) -> int:
+        """Fingerprint density for a window: denser at the start of a passage when enabled."""
+        if self.fast_start_seconds and window_end <= self.fast_start_seconds:
+            return FAST_START_DENSITY_DIVISOR
+        return DENSITY_DIVISOR
+
+    def _postpone_audd(self, passage: Passage) -> bool:
+        """Return True (and log) when AudD is due but a local candidate looks promising."""
+        if not self.postpone_audd or self._audd is None:
+            return False
+        if passage.audd_postponed >= MAX_AUDD_POSTPONES:
+            return False
+        history = passage.confirmer.history
+        latest = history[-1] if history else None
+        if latest is None or self._audd_wait_reason(passage) is not None:
+            return False  # no promising candidate, or AudD isn't due anyway
+        passage.audd_postponed += 1
+        votes, _ = passage.confirmer.accumulated(latest[0])
+        self.logger.info(
+            "AudD postponed (%d/%d): local candidate track %d has %d votes so far (passage %s)",
+            passage.audd_postponed,
+            MAX_AUDD_POSTPONES,
+            latest[0],
+            votes,
+            passage.short_id,
+        )
+        return True
 
     def _audd_wait_reason(self, passage: Passage) -> str | None:
         """Return why AudD may not be called now, or None if it may."""
@@ -604,7 +653,7 @@ class RecognitionEngine:
 
     async def _learn(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         try:
-            hashes = await self._fingerprint(pcm)
+            hashes = await self._fingerprint(pcm, self._divisor(window_end))
             await self._store_reference(passage, hashes, window_end)
         except asyncio.CancelledError:
             raise

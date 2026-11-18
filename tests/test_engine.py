@@ -583,3 +583,58 @@ async def test_audd_sample_uses_the_speed_correction(make_harness: Any) -> None:
     with wave.open(io.BytesIO(wav)) as reader:
         assert reader.getnframes() > 12 * 100  # 12 s at 100 Hz, made ~2 % longer
     assert h.published  # the fake AudD still identifies the (slightly slower) sample
+
+
+async def test_fast_start_fingerprints_the_start_of_a_passage_densely(make_harness: Any) -> None:
+    h = make_harness(fast_start_seconds=30)
+    await h.play(1, 60)
+    # lookups/learns whose window ends at <= 30 s use 1/4, later ones 1/16
+    assert h.divisors[:4] == [4, 4, 4, 4]
+    assert h.divisors[-1] == 16
+    plain = make_harness()
+    await plain.play(2, 30)
+    assert set(plain.divisors) == {16}
+
+
+def _due_passage(h: Any) -> Any:
+    """Return the open passage with AudD due (24 s of audio, no attempts yet)."""
+    passage = h.engine.passage
+    assert passage is not None
+    passage.seconds = 24.0
+    return passage
+
+
+async def test_audd_is_postponed_only_for_a_promising_candidate(make_harness: Any) -> None:
+    h = make_harness()
+    h.engine.feed(music(1, 0))
+    passage = _due_passage(h)
+    assert not h.engine._postpone_audd(passage)  # option off
+    h.engine.postpone_audd = True
+    assert not h.engine._postpone_audd(passage)  # no candidate yet
+    passage.confirmer.consider(_candidate(7, 1, 1.0))  # an accidental 1-vote candidate
+    assert not h.engine._postpone_audd(passage)
+    passage.confirmer.consider(_candidate(7, 2, 1.0))  # a promising candidate
+    assert h.engine._postpone_audd(passage)
+    assert h.engine._postpone_audd(passage)
+    assert not h.engine._postpone_audd(passage)  # at most MAX_AUDD_POSTPONES per passage
+    assert passage.audd_postponed == eng.MAX_AUDD_POSTPONES
+
+
+async def test_audd_is_not_postponed_when_it_is_not_due(make_harness: Any) -> None:
+    h = make_harness()
+    h.engine.postpone_audd = True
+    h.engine.feed(music(1, 0))
+    passage = _due_passage(h)
+    passage.seconds = 18.0  # before the first AudD attempt
+    passage.confirmer.consider(_candidate(7, 3, 1.0))
+    assert not h.engine._postpone_audd(passage)
+    assert passage.audd_postponed == 0
+
+
+async def test_without_token_nothing_is_postponed(make_harness: Any) -> None:
+    h = make_harness(has_token=False)
+    h.engine.postpone_audd = True
+    h.engine.feed(music(1, 0))
+    passage = _due_passage(h)
+    passage.confirmer.consider(_candidate(7, 3, 1.0))
+    assert not h.engine._postpone_audd(passage)

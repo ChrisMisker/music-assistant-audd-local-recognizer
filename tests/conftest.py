@@ -87,6 +87,8 @@ class Harness:
     # collect AudD debug samples (None = the option is off)
     samples: list[tuple[bytes, dict[str, Any]]] | None = None
     audd_speed_percent: float = 0.0
+    fast_start_seconds: float = 0.0
+    divisors: list[int] = field(default_factory=list)
     engine: RecognitionEngine = field(init=False)
 
     def build(self, logger: logging.Logger) -> Harness:
@@ -103,6 +105,7 @@ class Harness:
             run_blocking=self._run_blocking,
             save_sample=self._save_sample if self.samples is not None else None,
             audd_speed_percent=self.audd_speed_percent,
+            fast_start_seconds=self.fast_start_seconds,
         )
         return self
 
@@ -115,7 +118,8 @@ class Harness:
             await self.lookup_gate.wait()
         return func(*args)
 
-    async def _fingerprint(self, pcm: bytes) -> Fingerprints:
+    async def _fingerprint(self, pcm: bytes, divisor: int = 16) -> Fingerprints:
+        self.divisors.append(divisor)
         codes = decode_codes(pcm)
         self.windows.append(codes)
         if self.fingerprint_gate is not None:

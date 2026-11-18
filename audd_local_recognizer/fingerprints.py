@@ -211,9 +211,14 @@ def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
     return hashes
 
 
-def fingerprint_window(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
-    """Fingerprint one window and keep the deterministic production density subset."""
-    return density_subset(panako_fingerprint(pcm, fmt))
+def fingerprint_window(pcm: bytes, fmt: PcmFormat, divisor: int = DENSITY_DIVISOR) -> Fingerprints:
+    """
+    Fingerprint one window and keep a deterministic density subset (1/divisor).
+
+    A divisor that divides DENSITY_DIVISOR (e.g. 4) keeps a superset of the normal subset, so
+    denser and normal references and queries still match on the normal hashes.
+    """
+    return density_subset(panako_fingerprint(pcm, fmt), divisor)
 
 
 def _stable_bucket(value: str) -> int:
