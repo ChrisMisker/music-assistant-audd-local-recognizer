@@ -1,6 +1,20 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0 (2026-11-18)
+
+Records you have played before are now recognized locally much more often and faster, so fewer
+AudD requests are needed. Tested on a real turntable (two LP sides, 11 tracks played before):
+**8 of 11 recognized locally, on average after ~16 seconds**, no wrong titles. On the same Barry
+White side, 0.7 recognized 1 of 6 tracks locally; 0.8 recognized 5 of 6.
+
+### ⚠️ Worth knowing
+
+- **Disk space:** the new fast start (on by default) stores the first 30 seconds of every track
+  with more fingerprints: about **35 % more disk space** for the fingerprint database (roughly
+  0.7 MB per play of a 3-minute track instead of 0.5 MB). Turn "Fast start" off in the provider settings if you
+  prefer a smaller database.
+- Nothing else to do: your existing database is kept, and tracks you learned before also benefit
+  (fully from the next time you play them).
 
 ### New
 
@@ -32,6 +46,8 @@
   Deezer's empty "no cover" image. The provider now checks a Deezer cover once when AudD provides
   it (a single small request to Deezer's image server) and ignores it when it is empty, so a real
   cover can fill it in later. Covers stored earlier are checked once at startup.
+- No more harmless "invalid escape sequence" warnings from a dependency (pydub) in the Music
+  Assistant log on the first start after installing or updating.
 
 ## 0.7.0 (2026-11-18)
 

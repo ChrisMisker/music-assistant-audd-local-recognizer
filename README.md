@@ -16,12 +16,13 @@ recognized **locally**, without any external service.
 
 ## What's new
 
-**0.8.0** *(in testing, not released yet)*
-- **Faster recognition at the start of known tracks** (on by default): replays are usually
-  recognized locally within 12–18 seconds, without AudD. Uses ~35 % more disk space.
-- **More reliable local recognition of replays:** fingerprints that line up in time with an
-  earlier play add up over the whole track (18–24 s in our tests, no wrong titles).
-- Fixes: more cases of missing album art.
+**0.8.0** (2026-11-18)
+- **Records you played before are recognized locally more often and faster:** on a real turntable
+  8 of 11 known tracks locally, on average after ~16 seconds, without AudD (0.7: 1 of 6 on the
+  same side). Two changes: a denser *fast start* for the first 30 s of a track, and evidence that
+  lines up in time with an earlier play adds up over the whole track.
+- ⚠️ Fast start (on by default) uses **~35 % more disk space**; you can turn it off in the settings.
+- Fixes: more cases of missing album art; no more dependency warnings in the log.
 
 **0.7.0** (2026-11-18)
 - ⚠️ **Choose your audio source:** "Recognize all live audio sources" is now off by default. After
@@ -55,29 +56,32 @@ The more you play, the fewer AudD requests are needed.
 ## What to expect
 
 Recognition is not instant: the provider needs to hear a piece of each track first. Measured on
-a real turntable (November 2026, two records, 22 plays):
+a real turntable (November 2026, version 0.8, AudD speed correction set for that turntable):
 
 | Situation | Title appears after | AudD requests |
 |---|---|---|
-| **A track you have never played** (identified by AudD) | usually **30–90 seconds** (median ~55 s) | usually 1–3 |
-| **A track you have played before** (recognized locally) | usually **20–50 seconds** (median ~40 s) | 0–1 |
+| **A track you have never played** (identified by AudD) | usually **~27 seconds** | usually 1 |
+| **A track you have played before** (recognized locally) | usually **13–20 seconds** (8 of 11 tracks; average ~16 s) | 0 |
+| **A played-before track that isn't recognized locally** | ~27 seconds, via AudD (it is learned again) | 1 |
 | **A track AudD doesn't identify** | not shown; the provider keeps trying sparingly | 3–5 for a normal track |
 
-**Honest note:** in these tests AudD did not identify about **4 in 10 tracks**, including some
-well-known recordings, and a track it identified once was sometimes missed on the next play. We
-are investigating why (it may be the quality of the samples from vinyl). A track that is never
-identified is also never learned, so it won't be recognized locally either.
+**Honest note:** some recordings sound different enough on every play that local recognition
+misses them and AudD is asked again (3 of 11 known tracks in our test, partly because they were
+learned before 0.8). Without the right speed correction AudD missed about **4 in 10 tracks** in
+earlier tests (see [Questions](#questions)). A track that is never identified is also never
+learned, so it won't be recognized locally either.
 
 Why it takes this long:
 - The first look happens after **12 seconds** of a track; after that every 6 seconds.
 - AudD often doesn't recognize the first part of a track (the intro), so the provider waits
   until ~24 seconds before asking AudD, and tries again later if needed.
 - On vinyl, every play sounds slightly different, so local recognition collects evidence over a
-  few lookups before it is sure. This avoids showing a wrong title.
+  few lookups before it is sure (only evidence that lines up in time with an earlier play
+  counts). This avoids showing a wrong title.
 
-So: **the first time you play a record, expect about a minute per track before the title shows
-(and some AudD requests). The next times it's recognized locally, a bit faster, and free.** Faster
-local recognition is being worked on. These figures will be updated as more records are tested.
+So: **the first time you play a record, expect about half a minute per track before the title
+shows (and usually one AudD request). The next times most tracks are recognized locally within
+about 15–20 seconds, for free.** These figures will be updated as more records are tested.
 
 ## Requirements
 
@@ -144,7 +148,7 @@ add-on). **It grows as you play new music, and it can grow quickly**:
   the start** (on by default from 0.8) it is ~35 % more (~1.35 MB for a 3-minute track). (In 0.6.0 there is no limit yet:
   every play adds to the database.)
 
-Rough upper limits from 0.7:
+Rough upper limits from 0.7 (add ~35 % with fast start, on by default from 0.8):
 
 | Your music | Database size (max) |
 |---|---|
