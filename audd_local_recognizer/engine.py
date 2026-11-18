@@ -309,7 +309,7 @@ class RecognitionEngine:
         run_blocking: Callable[..., Awaitable[Any]] = asyncio.to_thread,
         save_sample: Callable[[bytes, dict[str, Any]], Awaitable[None]] | None = None,
         audd_speed_percent: float = 0.0,
-        postpone_audd: bool = False,
+        postpone_audd: bool = True,
         fast_start_seconds: float = 0.0,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""

@@ -16,6 +16,11 @@ recognized **locally**, without any external service.
 
 ## What's new
 
+**0.8.0** *(in testing, not released yet)*
+- **Faster recognition at the start of known tracks** (on by default): replays are usually
+  recognized locally within 12–18 seconds, without AudD. Uses ~35 % more disk space.
+- Fixes: more cases of missing album art.
+
 **0.7.0** (2026-11-18)
 - ⚠️ **Choose your audio source:** "Recognize all live audio sources" is now off by default. After
   updating, open the provider's settings and select your source (e.g. your turntable), or nothing
@@ -133,7 +138,8 @@ add-on). **It grows as you play new music, and it can grow quickly**:
 
 - each play of a ~3-minute track adds roughly **0.5 MB**;
 - from version 0.7 each track keeps its **two most recent plays** (~1 MB for a 3-minute track,
-  more for longer ones); older plays are removed automatically. (In 0.6.0 there is no limit yet:
+  more for longer ones); older plays are removed automatically. With **faster recognition at
+  the start** (on by default from 0.8) it is ~35 % more (~1.35 MB for a 3-minute track). (In 0.6.0 there is no limit yet:
   every play adds to the database.)
 
 Rough upper limits from 0.7:
@@ -159,6 +165,7 @@ Things to keep in mind:
 | **AudD API token** | Needed to identify new music. Optional if you only want local recognition. |
 | **Audio sources to recognize** | **Choose your source here** (e.g. your turntable). Nothing is recognized until you do. |
 | **Recognize all live audio sources** | Off by default. Turn on to recognize every live source that allows analysis. |
+| **Faster recognition at the start of known tracks** | On by default. Stores more fingerprints of the first 30 seconds of every track, so a replay is usually recognized within 12–18 s without AudD. Uses ~35 % more disk space. |
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |

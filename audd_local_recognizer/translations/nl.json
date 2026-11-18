@@ -39,6 +39,10 @@
     "audd_speed_correction_percent": {
       "label": "Snelheidscorrectie voor AudD (%)",
       "description": "Als je platenspeler iets te snel of te langzaam draait, kan AudD veel nummers missen. Fragmenten voor AudD worden zoveel sneller (positief) of langzamer (negatief) afgespeeld; bijvoorbeeld -2 voor een platenspeler die ongeveer 2 % te snel draait. Lokale herkenning verandert niet. Meet je platenspeler met een toerenteller-app."
+    },
+    "fast_start": {
+      "label": "Snellere herkenning aan het begin van bekende nummers",
+      "description": "Bewaart meer fingerprints van de eerste 30 seconden van elk nummer, zodat een plaat die je opnieuw vanaf het begin speelt meestal binnen 12-18 seconden wordt herkend, zonder AudD. Gebruikt ongeveer 35 % meer schijfruimte; zet uit bij een heel grote collectie. Geldt voor nummers die vanaf nu (opnieuw) worden geleerd."
     }
   }
 }

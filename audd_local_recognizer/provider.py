@@ -48,6 +48,8 @@ CONF_RESUME_DBFS = "resume_threshold_dbfs"
 CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
 CONF_SAVE_SAMPLES = "save_audd_samples"
 CONF_AUDD_SPEED = "audd_speed_correction_percent"
+CONF_FAST_START = "fast_start"
+FAST_START_SECONDS = 30.0
 MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
 
@@ -155,6 +157,19 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 depends_on=CONF_ALL_AUDIO_SOURCES,
                 depends_on_value=False,
                 label="Audio sources to recognize",
+            ),
+            ConfigEntry(
+                key=CONF_FAST_START,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+                label="Faster recognition at the start of known tracks",
+                description=(
+                    "Stores more fingerprints of the first 30 seconds of every track, so a record "
+                    "you play again from the start is usually recognized within 12-18 seconds "
+                    "without asking AudD. Uses about 35 % more disk space; turn off for a very "
+                    "large collection. Applies to tracks learned (or played again) from now on."
+                ),
             ),
             ConfigEntry(
                 key=CONF_SILENCE_DBFS,
@@ -267,6 +282,10 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             return 0.0
         return max(-MAX_SPEED_CORRECTION, min(MAX_SPEED_CORRECTION, percent))
 
+    def _fast_start(self) -> bool:
+        value = self.config.get_value(CONF_FAST_START)
+        return True if value is None else bool(value)
+
     def _token(self) -> str:
         return str(self.config.get_value(CONF_AUDD_API_TOKEN) or "").strip()
 
@@ -323,7 +342,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         audd = AudDClient(self.mass.http_session, token).recognize if token else None
         self.logger.info(
             "Analysis started: session=%s source=%s|%s format=%dHz/%dch/%s "
-            "silence<=%ddBFS resume>=%ddBFS gap>=%ds AudD speed correction %+.1f%%",
+            "silence<=%ddBFS resume>=%ddBFS gap>=%ds AudD speed correction %+.1f%% "
+            "fast start %s",
             session_id,
             streamdetails.provider,
             streamdetails.item_id,
@@ -334,6 +354,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             resume,
             min_gap,
             self._speed_correction(),
+            "on" if self._fast_start() else "off",
         )
         self._engines[session_id] = RecognitionEngine(
             fmt=fmt,
@@ -346,6 +367,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             logger=self.logger,
             save_sample=self._save_sample if self.config.get_value(CONF_SAVE_SAMPLES) else None,
             audd_speed_percent=self._speed_correction(),
+            fast_start_seconds=FAST_START_SECONDS if self._fast_start() else 0.0,
         )
         if self.config.get_value(CONF_RECORD_INPUT):
             await self._start_recording(session_id, fmt)

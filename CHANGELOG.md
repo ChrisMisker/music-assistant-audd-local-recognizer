@@ -1,6 +1,22 @@
 # Changelog
 
-## 0.7.1 (unreleased)
+## 0.8.0 (unreleased)
+
+### New
+
+- **Faster recognition at the start of known tracks** (setting, on by default). The first 30
+  seconds of every track are stored with more fingerprints, so a record you play again from the
+  start is usually recognized locally within **12–18 seconds** instead of ~25 s, and without an
+  AudD request. Measured offline on a real recording (Barry White, played twice): on the second
+  play 5 of 6 tracks were recognized locally (before: 1 of 6), AudD requests 5 → 1, no wrong
+  titles. Costs about **35 % more disk space**; turn it off for a very large collection. Tracks
+  you learned before benefit from the next time you play them.
+
+### Improved
+
+- When AudD is due but local recognition is already close to a known track, the provider waits
+  one more moment for local confirmation instead of spending an AudD request.
+
 
 ### Fixed
 
