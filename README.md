@@ -44,6 +44,28 @@ All changes: [CHANGELOG.md](CHANGELOG.md) and the
 
 The more you play, the fewer AudD requests are needed.
 
+## What to expect
+
+Recognition is not instant: the provider needs to hear a piece of each track first. Measured on
+a real turntable (November 2026):
+
+| Situation | Title appears after | AudD requests |
+|---|---|---|
+| **A track you have never played** (identified by AudD) | usually **45–60 seconds** into the track | usually 1–3 |
+| **A track you have played before** (recognized locally) | usually **40–50 seconds**, sometimes sooner | 0–1 |
+| **A quiet or unusual intro**, or a rare recording | sometimes a few minutes; occasionally not at all | up to 8 per track |
+
+Why it takes this long:
+- The first look happens after **12 seconds** of a track; after that every 6 seconds.
+- AudD often doesn't recognize the first part of a track (the intro), so the provider waits
+  until ~24 seconds before asking AudD, and tries again later if needed.
+- On vinyl, every play sounds slightly different, so local recognition collects evidence over a
+  few lookups before it is sure. This avoids showing a wrong title.
+
+So: **the first time you play a record, expect about a minute per track before the title shows
+(and some AudD requests). The next times it's recognized locally, a bit faster, and free.** Faster
+local recognition is being worked on. These figures will be updated as more records are tested.
+
 ## Requirements
 
 - **Music Assistant Nightly** (2.11 development builds from November 2026 or later). **For now
@@ -142,9 +164,8 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
 - **The album shown is AudD's**, often a digital compilation rather than the LP you are
   playing. Audio recognition identifies the recording, not your pressing. Using your own
   record collection's metadata is on the roadmap.
-- **Recognition takes a little time.** Locally, about 12–40 seconds into a track. Via AudD,
-  usually 25–60 seconds, because AudD often doesn't recognize the first seconds (intro) of a
-  track.
+- **Recognition takes a little time**: up to about a minute per track for new music, somewhat
+  less for music you've played before. See [What to expect](#what-to-expect).
 - **During silence the last track stays visible** until the next one is recognized. Music
   Assistant has no way yet to withdraw it earlier.
 - **The time shown on the player** is the time since the source started, not the position
