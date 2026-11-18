@@ -12,6 +12,7 @@ import math
 import wave
 from collections import Counter
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -141,9 +142,30 @@ def _channel(pcm: bytes, fmt: PcmFormat, index: int) -> bytes:
     return raw[:, start : start + fmt.sample_width].tobytes()
 
 
-def pcm_to_wav(pcm: bytes, fmt: PcmFormat) -> bytes:
-    """Encode PCM as a mono 16-bit WAV file (the payload sent to AudD)."""
-    mono = pcm_to_mono_s16(pcm, fmt)
+def change_speed(samples: np.ndarray, percent: float) -> np.ndarray:
+    """
+    Play mono int16 audio ``percent`` % faster (negative: slower), like a turntable speed change.
+
+    Tempo and pitch change together; the sample rate stays the same.
+    """
+    if not percent or not samples.size:
+        return samples
+    from scipy.signal import resample_poly  # noqa: PLC0415 - audalign dependency, heavy
+
+    ratio = Fraction(1 / (1 + percent / 100)).limit_denominator(1000)  # samples out / in
+    resampled = resample_poly(samples.astype(np.float32), ratio.numerator, ratio.denominator)
+    result: np.ndarray = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+    return result
+
+
+def pcm_to_wav(pcm: bytes, fmt: PcmFormat, speed_percent: float = 0.0) -> bytes:
+    """
+    Encode PCM as a mono 16-bit WAV file (the payload sent to AudD).
+
+    speed_percent corrects a turntable's speed for AudD, e.g. -2.0 plays the sample 2 % slower
+    (AudD's fingerprints are sensitive to speed; the local fingerprints are not).
+    """
+    mono = change_speed(pcm_to_mono_s16(pcm, fmt), speed_percent)
     out = io.BytesIO()
     with wave.open(out, "wb") as wav:
         wav.setnchannels(1)
@@ -180,7 +202,9 @@ def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
         config.set_hash_style("panako")
     else:
         config.hash_style = "panako"
-    hashes = fingerprinter.fingerprint(samples, config)
+    # log10 of an all-zero spectrum in a very quiet window: harmless, keep it out of the MA log
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hashes = fingerprinter.fingerprint(samples, config)
     if not isinstance(hashes, dict):
         msg = "Audalign returned an unexpected fingerprint result"
         raise TypeError(msg)

@@ -43,6 +43,12 @@
 
 ### Troubleshooting
 
+- New advanced setting **"Speed correction for AudD (%)"** (default 0). A turntable that runs a
+  little fast or slow made AudD miss many tracks in our tests (a sample played 2 % slower was
+  recognized). The correction is applied only to the samples sent to AudD.
+- Quiet passages no longer put a harmless "divide by zero" warning from the fingerprint library
+  in the Music Assistant log.
+
 - New advanced setting **"Save AudD samples for debugging"** (off by default): keeps the last 40
   samples sent to AudD as WAV, with their outcome and measurements (level, clipping, left/right
   correlation), in the provider's data folder. Useful to hear why AudD misses a track.

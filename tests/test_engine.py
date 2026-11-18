@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import wave
 from typing import Any
 
 import pytest
@@ -574,3 +576,14 @@ async def test_no_match_reason_is_logged(
         "AudD: no match: error 300 (no fingerprint from the sample)" in r.getMessage()
         for r in caplog.records
     )
+
+
+async def test_audd_sample_uses_the_speed_correction(make_harness: Any) -> None:
+    h = make_harness(samples=[], audd_speed_percent=-2.0)
+    await h.play(1, 30)
+    assert h.samples is not None
+    wav, info = h.samples[0]
+    assert info["speed_correction_percent"] == -2.0
+    with wave.open(io.BytesIO(wav)) as reader:
+        assert reader.getnframes() > 12 * 100  # 12 s at 100 Hz, made ~2 % longer
+    assert h.published  # the fake AudD still identifies the (slightly slower) sample

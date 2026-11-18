@@ -295,6 +295,7 @@ class RecognitionEngine:
         logger: logging.Logger,
         run_blocking: Callable[..., Awaitable[Any]] = asyncio.to_thread,
         save_sample: Callable[[bytes, dict[str, Any]], Awaitable[None]] | None = None,
+        audd_speed_percent: float = 0.0,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -303,6 +304,7 @@ class RecognitionEngine:
         self._db = db
         self._audd = audd
         self._save_sample = save_sample
+        self.audd_speed_percent = audd_speed_percent
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
@@ -519,7 +521,7 @@ class RecognitionEngine:
             SAMPLE_SECONDS,
             passage.short_id,
         )
-        wav = pcm_to_wav(pcm, self.fmt)
+        wav = pcm_to_wav(pcm, self.fmt, self.audd_speed_percent)
         try:
             result = await self._audd(wav)
         except asyncio.CancelledError:
@@ -556,6 +558,7 @@ class RecognitionEngine:
                 "attempt": passage.audd_attempts,
                 "window_seconds": [round(max(0.0, window_end - SAMPLE_SECONDS), 1), window_end],
                 "outcome": outcome,
+                "speed_correction_percent": self.audd_speed_percent,
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
                 **sample_stats(pcm, self.fmt),

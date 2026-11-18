@@ -47,6 +47,8 @@ CONF_SILENCE_DBFS = "silence_threshold_dbfs"
 CONF_RESUME_DBFS = "resume_threshold_dbfs"
 CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
 CONF_SAVE_SAMPLES = "save_audd_samples"
+CONF_AUDD_SPEED = "audd_speed_correction_percent"
+MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
 
 DEFAULT_SILENCE_DBFS = -45
@@ -166,6 +168,21 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 label="Minimum track gap (seconds)",
             ),
             ConfigEntry(
+                key=CONF_AUDD_SPEED,
+                type=ConfigEntryType.FLOAT,
+                default_value=0.0,
+                range=(-MAX_SPEED_CORRECTION, MAX_SPEED_CORRECTION),
+                required=False,
+                advanced=True,
+                label="Speed correction for AudD (%)",
+                description=(
+                    "If your turntable runs a little fast or slow, AudD may miss many tracks. "
+                    "Samples sent to AudD are played this much faster (positive) or slower "
+                    "(negative); e.g. -2 for a turntable that runs about 2 % fast. Local "
+                    "recognition is not affected. Measure your turntable with an RPM app."
+                ),
+            ),
+            ConfigEntry(
                 key=CONF_SAVE_SAMPLES,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
@@ -225,6 +242,16 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         except ValueError:
             return default
 
+    def _speed_correction(self) -> float:
+        value = self.config.get_value(CONF_AUDD_SPEED)
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return 0.0
+        try:
+            percent = float(value)
+        except ValueError:
+            return 0.0
+        return max(-MAX_SPEED_CORRECTION, min(MAX_SPEED_CORRECTION, percent))
+
     def _token(self) -> str:
         return str(self.config.get_value(CONF_AUDD_API_TOKEN) or "").strip()
 
@@ -281,7 +308,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         audd = AudDClient(self.mass.http_session, token).recognize if token else None
         self.logger.info(
             "Analysis started: session=%s source=%s|%s format=%dHz/%dch/%s "
-            "silence<=%ddBFS resume>=%ddBFS gap>=%ds",
+            "silence<=%ddBFS resume>=%ddBFS gap>=%ds AudD speed correction %+.1f%%",
             session_id,
             streamdetails.provider,
             streamdetails.item_id,
@@ -291,6 +318,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             silence,
             resume,
             min_gap,
+            self._speed_correction(),
         )
         self._engines[session_id] = RecognitionEngine(
             fmt=fmt,
@@ -302,6 +330,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             spawn=lambda coro: self.mass.create_task(coro, task_name=f"{self.domain}_recognition"),
             logger=self.logger,
             save_sample=self._save_sample if self.config.get_value(CONF_SAVE_SAMPLES) else None,
+            audd_speed_percent=self._speed_correction(),
         )
         if self.config.get_value(CONF_RECORD_INPUT):
             await self._start_recording(session_id, fmt)

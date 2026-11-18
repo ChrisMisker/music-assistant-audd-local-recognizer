@@ -35,6 +35,10 @@
     "record_input_stream": {
       "label": "Invoerstream opnemen voor foutopsporing",
       "description": "Neem de live invoer op precies zoals de herkenning die ontvangt (WAV, ongeveer 10 MB per minuut) in de datamap van de provider (recordings/), tot 60 minuten in totaal; daarna stopt het vanzelf. Alleen voor het oplossen van problemen; de bestanden blijven op deze server en komen ook in de Home Assistant-back-ups, dus verwijder ze daarna."
+    },
+    "audd_speed_correction_percent": {
+      "label": "Snelheidscorrectie voor AudD (%)",
+      "description": "Als je platenspeler iets te snel of te langzaam draait, kan AudD veel nummers missen. Fragmenten voor AudD worden zoveel sneller (positief) of langzamer (negatief) afgespeeld; bijvoorbeeld -2 voor een platenspeler die ongeveer 2 % te snel draait. Lokale herkenning verandert niet. Meet je platenspeler met een toerenteller-app."
     }
   }
 }

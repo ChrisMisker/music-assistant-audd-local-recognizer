@@ -11,6 +11,7 @@ import pytest
 from audd_local_recognizer.fingerprints import (
     FINGERPRINT_SAMPLE_RATE,
     PcmFormat,
+    change_speed,
     density_subset,
     fingerprint_window,
     panako_fingerprint,
@@ -210,3 +211,27 @@ def test_sample_stats_detect_phase_problems_and_clipping() -> None:
     assert clipped["clipped_ratio"] > 0.3
     mono = sample_stats(tone.astype("<f4").tobytes(), PcmFormat(44100, 1, 4, "f32le"))
     assert mono["lr_correlation"] is None
+
+
+def _dominant_hz(samples: np.ndarray, rate: int) -> float:
+    spectrum = np.abs(np.fft.rfft(samples.astype(np.float64)))
+    return float(np.argmax(spectrum) * rate / samples.size)
+
+
+def test_change_speed_changes_tempo_and_pitch_together() -> None:
+    rate = 44100
+    tone = (0.5 * 32767 * np.sin(2 * np.pi * 440 * np.arange(rate * 4) / rate)).astype(np.int16)
+    slower = change_speed(tone, -2.0)
+    assert slower.size == pytest.approx(tone.size / 0.98, rel=0.002)  # longer
+    assert _dominant_hz(slower, rate) == pytest.approx(440 * 0.98, abs=1.0)  # lower: ~431 Hz
+    faster = change_speed(tone, 2.0)
+    assert faster.size == pytest.approx(tone.size / 1.02, rel=0.002)
+    assert _dominant_hz(faster, rate) == pytest.approx(440 * 1.02, abs=1.0)
+    assert change_speed(tone, 0.0) is tone
+
+
+def test_wav_with_speed_correction() -> None:
+    pcm = np.repeat(_tone(1), 2).astype("<f4").tobytes()
+    with wave.open(io.BytesIO(pcm_to_wav(pcm, SENDSPIN, -2.0))) as reader:
+        assert reader.getframerate() == 44100  # the rate stays; the audio is longer
+        assert reader.getnframes() == pytest.approx(44100 / 0.98, rel=0.002)

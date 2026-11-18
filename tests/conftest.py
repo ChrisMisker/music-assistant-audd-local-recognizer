@@ -86,6 +86,7 @@ class Harness:
     lookup_gate: asyncio.Event | None = None
     # collect AudD debug samples (None = the option is off)
     samples: list[tuple[bytes, dict[str, Any]]] | None = None
+    audd_speed_percent: float = 0.0
     engine: RecognitionEngine = field(init=False)
 
     def build(self, logger: logging.Logger) -> Harness:
@@ -101,6 +102,7 @@ class Harness:
             logger=logger,
             run_blocking=self._run_blocking,
             save_sample=self._save_sample if self.samples is not None else None,
+            audd_speed_percent=self.audd_speed_percent,
         )
         return self
 

@@ -35,6 +35,10 @@
     "record_input_stream": {
       "label": "Record the input stream for debugging",
       "description": "Record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute) in the provider's data folder (recordings/), up to 60 minutes in total; then it stops by itself. Only for troubleshooting; the files stay on this server and are included in Home Assistant backups, so remove them afterwards."
+    },
+    "audd_speed_correction_percent": {
+      "label": "Speed correction for AudD (%)",
+      "description": "If your turntable runs a little fast or slow, AudD may miss many tracks. Samples sent to AudD are played this much faster (positive) or slower (negative); e.g. -2 for a turntable that runs about 2 % fast. Local recognition is not affected. Measure your turntable with an RPM app."
     }
   }
 }

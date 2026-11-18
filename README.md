@@ -163,6 +163,7 @@ Things to keep in mind:
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
+| *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). Local recognition is not affected. |
 | *Advanced:* **Record the input stream for debugging** | Off by default. Records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute, up to 60 minutes in total, then it stops) in the provider's data folder. For troubleshooting only; the files are included in Home Assistant backups, so remove them afterwards. |
 | *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 
@@ -210,6 +211,12 @@ switch costs some extra AudD requests, once per track.
 
 **I play a different pressing of the same album.** Same as above: the same recording is usually
 recognized; otherwise it is identified via AudD once and learned.
+
+**AudD doesn't recognize many of my tracks, even well-known ones.** Check your turntable's
+speed: AudD is sensitive to it, while local recognition is not. In our tests a turntable that ran
+fast made AudD miss about 4 in 10 tracks; a sample played 2 % slower was recognized. Measure the
+speed with an RPM/strobe app on your phone and adjust the turntable if you can, or set **Speed
+correction for AudD** (advanced setting), e.g. to -2.
 
 ## Troubleshooting
 
