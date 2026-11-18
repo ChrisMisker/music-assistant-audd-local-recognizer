@@ -187,13 +187,16 @@ minimum gap).
 
 These are known and documented on purpose. Some are being worked on (see [ROADMAP.md](ROADMAP.md)).
 
-- **Records without silence between tracks are not supported yet** (DJ mixes, live albums,
-  continuous sides, crossfades). Without a gap the provider doesn't notice that the track
-  changed: the previous title stays on screen, and **it may learn the next track under the
-  previous track's name**, so that track can later be recognized wrongly. Support is planned
-  for a later version (using the track length to detect where a track should end). Until then,
-  we recommend turning the provider off for such records, or limiting it to sources where you
-  play records with gaps. There is no way yet to remove wrongly learned tracks (see below).
+- **Records without silence between tracks are only partly supported** (live albums, continuous
+  sides, crossfades, DJ mixes). Without a gap the provider can't hear the track change. Since 0.9
+  it uses the track length that AudD reports: it stops learning a few seconds before the track
+  should end, and a few seconds after that it starts listening for the next track, gap or not.
+  The previous title stays on screen until the next track is recognized. Limits: tracks learned
+  before 0.9 have no stored length until AudD identifies them again, so a local recognition of
+  such a track has no end guard; if AudD's version of a track is longer than the one on your
+  record, a few seconds of the next track can still be learned under the previous name; real DJ
+  mixes and long crossfades are not handled. There is no way yet to remove wrongly learned tracks
+  (see below).
 - **One long track** (for example a 20-minute classical piece) works: it is recognized once,
   and learning stops after 10 minutes.
 - **The album shown is AudD's**, often a digital compilation rather than the LP you are
@@ -245,6 +248,8 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 |---|---|
 | `Passage … started` | Music started after silence; a new track is being listened to. |
 | `Track boundary: … dBFS for 2.0s` | A silence gap was detected: track change, or the record ended. |
+| `Expected end of … at 245s` | The track's length is known: learning stops a few seconds before that moment. |
+| `Track boundary (no gap): …` | The track should have ended but there was no silence (a gapless record): listening for the next track. |
 | `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
 | `AudD attempt n/8` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |

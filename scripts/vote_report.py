@@ -20,7 +20,7 @@ from datetime import datetime
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.\d+ \w+ \(.*?\) \[.*?\] (.*)$")
 STARTED = re.compile(r"Passage (\w{8}) started")
-CLOSED = re.compile(r"Track boundary: .*?passage (\w{8}) closed after (\d+)s")
+CLOSED = re.compile(r"Track boundary(?: \(no gap\))?: .*?passage (\w{8}) closed after (\d+)s")
 LOCAL = re.compile(
     r"LOCAL (HIT|CANDIDATE): (.*?) votes=(\d+)(?: acc=\d+)? ratio=[\d.]+ .*?"
     r"(?: at=(\d+)s)? -> (.*?) \(passage (\w{8})\)$"

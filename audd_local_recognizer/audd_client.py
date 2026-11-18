@@ -113,6 +113,47 @@ def pick_isrc(result: dict[str, Any]) -> str | None:
     return None
 
 
+def _positive_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return None
+    return float(value)
+
+
+def pick_duration(result: dict[str, Any]) -> float | None:
+    """
+    Return the matched recording's duration in seconds from the enrichment blocks, if any.
+
+    Apple Music `durationInMillis`, then Spotify `duration_ms`, then Deezer `duration` (seconds).
+    """
+    apple = result.get("apple_music")
+    spotify = result.get("spotify")
+    deezer = result.get("deezer")
+    for millis in (
+        apple.get("durationInMillis") if isinstance(apple, dict) else None,
+        spotify.get("duration_ms") if isinstance(spotify, dict) else None,
+    ):
+        if (value := _positive_number(millis)) is not None:
+            return round(value / 1000, 1)
+    seconds = _positive_number(deezer.get("duration")) if isinstance(deezer, dict) else None
+    return round(seconds, 1) if seconds is not None else None
+
+
+def parse_timecode(value: Any) -> float | None:
+    """Turn AudD's "mm:ss" (or "hh:mm:ss") timecode into seconds; None if unusable."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = [int(part) for part in value.strip().split(":")]
+    except ValueError:
+        return None
+    if len(parts) not in {2, 3} or any(part < 0 for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return float(seconds)
+
+
 def parse_result(result: Any) -> dict[str, Any] | None:
     """Turn an AudD `result` object into our metadata dict, or None if unusable."""
     if not isinstance(result, dict):
@@ -129,6 +170,7 @@ def parse_result(result: Any) -> dict[str, Any] | None:
         "uri": _str(result.get("song_link")),
         "isrc": pick_isrc(result),
         "audd_timecode": _str(result.get("timecode")),
+        "duration_seconds": pick_duration(result),
     }
 
 

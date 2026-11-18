@@ -12,7 +12,9 @@ from audd_local_recognizer.audd_client import (
     AudDNoMatch,
     parse_response,
     parse_response_detail,
+    parse_timecode,
     pick_artwork,
+    pick_duration,
     pick_isrc,
 )
 
@@ -61,7 +63,38 @@ def test_success_is_parsed() -> None:
         "uri": "https://lis.tn/x",
         "isrc": None,
         "audd_timecode": "00:12",
+        "duration_seconds": None,
     }
+
+
+def test_duration_priority_and_units() -> None:
+    apple = {"durationInMillis": 201500}
+    spotify = {"duration_ms": 199000}
+    deezer = {"duration": 198}
+    assert pick_duration({"apple_music": apple, "spotify": spotify, "deezer": deezer}) == 201.5
+    assert pick_duration({"spotify": spotify, "deezer": deezer}) == 199.0
+    assert pick_duration({"deezer": deezer}) == 198.0
+    assert pick_duration({}) is None
+    # malformed or empty values fall through
+    bad = {"apple_music": {"durationInMillis": "x"}, "spotify": {"duration_ms": 0}}
+    assert pick_duration({**bad, "deezer": {"duration": True}}) is None
+    assert pick_duration({**bad, "deezer": deezer}) == 198.0
+    meta = parse_response(_success(spotify=spotify))
+    assert meta is not None
+    assert meta["duration_seconds"] == 199.0
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [("00:23", 23.0), ("03:22", 202.0), ("1:02:03", 3723.0), (" 00:05 ", 5.0)],
+)
+def test_timecode_is_parsed(value: str, seconds: float) -> None:
+    assert parse_timecode(value) == seconds
+
+
+@pytest.mark.parametrize("value", [None, "", "23", "aa:bb", "00:-1", "1:2:3:4", 23])
+def test_unusable_timecode_is_none(value: object) -> None:
+    assert parse_timecode(value) is None
 
 
 def test_artwork_priority() -> None:

@@ -678,3 +678,108 @@ async def test_without_token_nothing_is_postponed(make_harness: Any) -> None:
     passage = _due_passage(h)
     passage.confirmer.consider(_candidate(7, 3, 1.0))
     assert not h.engine._postpone_audd(passage)
+
+
+# ---------------------------------------------------------------- gapless guard
+
+
+def learned(h: Any) -> dict[int, set[tuple[int, int]]]:
+    """Return per track id the (song, second) of every stored landmark."""
+    import sqlite3  # noqa: PLC0415
+
+    with sqlite3.connect(h.db.path) as conn:
+        rows = conn.execute(
+            "SELECT r.track_id, l.fingerprint_hash FROM landmarks l "
+            "JOIN reference_windows r ON r.id = l.reference_id"
+        ).fetchall()
+    result: dict[int, set[tuple[int, int]]] = {}
+    for track_id, fp_hash in rows:
+        song, second = str(fp_hash)[1:].split("t")
+        result.setdefault(int(track_id), set()).add((int(song), int(second)))
+    return result
+
+
+def messages(caplog: pytest.LogCaptureFixture, text: str) -> list[str]:
+    return [r.getMessage() for r in caplog.records if text in r.getMessage()]
+
+
+async def test_gapless_next_track_is_not_learned_under_the_previous_one(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 60, 2: 50})
+    await h.play(1, 60)
+    await h.play(2, 60)  # no silence in between
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 2"]
+    songs = {track: {song for song, _ in seconds} for track, seconds in learned(h).items()}
+    assert songs == {1: {1}, 2: {2}}
+    # learning of song 1 stopped TRACK_END_GUARD_SECONDS before its end
+    assert max(second for _, second in learned(h)[1]) < 60 - eng.TRACK_END_GUARD_SECONDS
+    assert len(messages(caplog, "Track boundary (no gap)")) == 2  # after song 1 and song 2
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 60s")
+
+
+async def test_without_a_duration_there_is_no_soft_boundary(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness()  # AudD reports no timecode or duration
+    await h.play(1, 60)
+    await h.play(2, 30)
+    assert messages(caplog, "Track boundary (no gap)") == []
+    assert [m["title"] for m in h.published] == ["Song 1"]
+
+
+async def test_early_windows_from_before_the_song_are_not_learned(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={2: 120}, audd_known={2})
+    await h.play(1, 10, start=170)  # the stream starts on the tail of another track
+    await h.play(2, 40)  # without a gap
+    assert [m["title"] for m in h.published] == ["Song 2"]
+    assert {song for seconds in learned(h).values() for song, _ in seconds} == {2}
+    assert messages(caplog, "Not learning 2 early windows outside Artist 2 - Song 2")
+
+
+async def test_a_longer_version_than_the_duration_is_relearned_without_a_guard(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 40})  # AudD knows a shorter edit than the record plays
+    await h.play(1, 100)
+    assert len(messages(caplog, "Track boundary (no gap)")) == 1
+    assert messages(caplog, "already playing longer than its known duration")
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 1"]
+    assert set(learned(h)) == {1}
+    # the second passage keeps learning to the end of the record's (longer) version
+    assert max(second for _, second in learned(h)[1]) >= 80
+
+
+async def test_a_local_hit_uses_the_stored_duration(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 60, 2: 50})
+    await h.play(1, 60)
+    await h.play(2, 50)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 60)
+    await h.play(2, 20)
+    assert len(h.audd_calls) == calls  # the replay of song 1 was recognized locally
+    assert messages(caplog, "Identified Artist 1 - Song 1 via local")
+    assert len(messages(caplog, "Expected end of Artist 1 - Song 1 at 60s")) == 2
+    songs = {track: {song for song, _ in seconds} for track, seconds in learned(h).items()}
+    assert songs == {1: {1}, 2: {2}}
+
+
+async def test_the_guard_scales_with_the_speed_correction(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    # a turntable 2 % fast: 100 s of the recording takes 98 s
+    h = make_harness(durations={1: 100}, audd_speed_percent=-2.0)
+    await h.play(1, 30)
+    # timecode 24 at 24 s: song started at 24 - 24 * 0.98 = 0.48 s; ends at 0.48 + 98 = 98.5 s
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 98s")

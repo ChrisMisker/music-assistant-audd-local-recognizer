@@ -75,6 +75,9 @@ class Harness:
     published: list[dict[str, Any]] = field(default_factory=list)
     # songs AudD knows; None entries in audd_script force a no-match for that call
     audd_known: set[int] = field(default_factory=lambda: {1, 2, 3, 4})
+    # track durations (seconds) AudD reports; a song listed here also gets a timecode: the song
+    # second at the end of the sample, as real AudD answers
+    durations: dict[int, float] = field(default_factory=dict)
     audd_script: list[Any] = field(default_factory=list)
     has_token: bool = True
     publish_result: bool = True
@@ -149,7 +152,14 @@ class Harness:
                 return None
         songs = {c // 1000 for c in codes if c}
         song = max(songs, key=lambda s: sum(1 for c in codes if c // 1000 == s), default=0)
-        return metadata_for(song) if song in self.audd_known else None
+        if song not in self.audd_known:
+            return None
+        metadata = metadata_for(song)
+        if song in self.durations:
+            end = max(c % 1000 for c in codes if c // 1000 == song) + 1
+            metadata["audd_timecode"] = f"{end // 60:02d}:{end % 60:02d}"
+            metadata["duration_seconds"] = self.durations[song]
+        return metadata
 
     def _publish(self, metadata: dict[str, Any]) -> bool:
         self.published.append(metadata)

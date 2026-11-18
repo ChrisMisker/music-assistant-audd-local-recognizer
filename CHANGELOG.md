@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Records without silence between tracks no longer teach the provider the next track under the
+wrong name (as long as AudD reports the track length, which it usually does).
+
+### New
+
+- **Gapless guard:** the provider now stores the track length that AudD reports, and uses it with
+  AudD's position in the song (or the position of a local match) to work out when the track should
+  end. Learning stops 5 seconds before that moment; if no silence follows within 5 seconds after
+  it, the provider starts listening for the next track anyway. New log lines: `Expected end of …`
+  and `Track boundary (no gap): …`.
+- A track that turns out to be longer than AudD's length (another edit or version) is recognized
+  again and then simply learned to its end.
+- When a passage started on the tail of the previous track, the fingerprints from before the
+  recognized song started are no longer learned.
+
+### ⚠️ Worth knowing
+
+- Tracks learned before this version have no stored length yet. They get one the next time AudD
+  identifies them; until then a local recognition of such a track has no end guard.
+
 ## 0.8.0 (2026-11-18)
 
 Records you have played before are now recognized locally much more often and faster, so fewer

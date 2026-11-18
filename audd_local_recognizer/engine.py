@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
-from .audd_client import AudDError, AudDNoMatch
+from .audd_client import AudDError, AudDNoMatch, parse_timecode
 from .fingerprints import (
     DENSITY_DIVISOR,
     PANAKO_FRAME_SECONDS,
@@ -56,6 +56,16 @@ LEARN_INTERVAL_SECONDS = 6  # 12 s windows every 6 s: overlap is intentional (re
 # Stop learning a passage after this long. Guards against learning the next track under
 # the current identity on records without audible gaps between tracks.
 MAX_LEARN_SECONDS_PER_PASSAGE = 600
+# Gapless guard: once a passage is identified, AudD's timecode (the song position at the end of
+# the sample, 1 s resolution) or the time shift of a local match, plus the track's duration, tell
+# when the track should end in passage time. Learning stops TRACK_END_GUARD_SECONDS before that
+# moment, and if no silence gap came TRACK_END_GUARD_SECONDS after it, the passage is closed anyway
+# (a soft boundary) and a new, unidentified one starts. The audio in between is never learned, so
+# on records without gaps the next track is not learned under this one. Early lookup windows that
+# start before the song did (a passage that began on the previous track) are not stored either;
+# that check allows SONG_START_TOLERANCE_SECONDS for the timecode's 1 s resolution.
+TRACK_END_GUARD_SECONDS = 5
+SONG_START_TOLERANCE_SECONDS = 2
 # Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
 # the first ~2 minutes) and stored as references once the passage is identified, so the
 # start of a track is learned too even when identification only succeeds later.
@@ -316,6 +326,9 @@ class Passage:
     next_audd_at: float = float(AUDD_FIRST_ATTEMPT_SECONDS)
     early_windows: list[tuple[float, Fingerprints]] = field(default_factory=list)
     evidence: TimelineEvidence = field(default_factory=TimelineEvidence)
+    # passage time at which the identified song started (may be negative) and should end
+    song_start_at: float | None = None
+    track_end_at: float | None = None
 
     @property
     def short_id(self) -> str:
@@ -420,6 +433,8 @@ class RecognitionEngine:
             self._close_passage(level)
         elif event is GapEvent.RESUME:
             self._open_passage(f"audio resumed at {level:.1f} dBFS")
+        elif (passage := self.passage) is not None and self._past_track_end(passage):
+            self._end_at_track_end(passage)
         if self.passage is None:
             return  # inside a gap: no buffering, fingerprinting, matching or AudD
         self.passage.append(chunk, chunk_seconds)
@@ -459,6 +474,25 @@ class RecognitionEngine:
             describe(passage.metadata) if passage.identified else "unidentified",
         )
 
+    @staticmethod
+    def _past_track_end(passage: Passage) -> bool:
+        return (
+            passage.track_end_at is not None
+            and passage.seconds >= passage.track_end_at + TRACK_END_GUARD_SECONDS
+        )
+
+    def _end_at_track_end(self, passage: Passage) -> None:
+        """Soft boundary: the track should have ended, but no gap came (a gapless record)."""
+        self.passage = None  # in-flight tasks for it now discard their results
+        self.logger.info(
+            "Track boundary (no gap): %s should have ended at %.0fs; passage %s closed after %.0fs",
+            describe(passage.metadata),
+            passage.track_end_at,
+            passage.short_id,
+            passage.seconds,
+        )
+        self._open_passage("no gap after the expected end of the previous track")
+
     def _is_current(self, passage: Passage) -> bool:
         return not self.stopped and self.passage is passage
 
@@ -471,6 +505,19 @@ class RecognitionEngine:
             return
         if passage.identified:
             if passage.seconds < passage.next_learn_at or passage.learning_capped:
+                return
+            if (
+                passage.track_end_at is not None
+                and passage.seconds > passage.track_end_at - TRACK_END_GUARD_SECONDS
+            ):
+                passage.learning_capped = True
+                self.logger.info(
+                    "Passage %s: stopped learning %ds before the expected end of %s (%.0fs)",
+                    passage.short_id,
+                    TRACK_END_GUARD_SECONDS,
+                    describe(passage.metadata),
+                    passage.track_end_at,
+                )
                 return
             if passage.seconds > MAX_LEARN_SECONDS_PER_PASSAGE:
                 passage.learning_capped = True
@@ -514,21 +561,31 @@ class RecognitionEngine:
         self, passage: Passage, pcm: bytes, query: Fingerprints, window_end: float
     ) -> None:
         """Ask AudD (if allowed); on a hit identify the passage and learn its windows."""
-        metadata = await self._try_audd(passage, pcm, window_end)
-        if metadata is None or not self._is_current(passage):
+        hit = await self._try_audd(passage, pcm, window_end)
+        if hit is None or not self._is_current(passage):
             return
-        track_id = await self._run_blocking(self._db.upsert_track, metadata)
+        track_id = await self._run_blocking(self._db.upsert_track, hit)
         # show what is stored: a known track keeps its first metadata (see upsert_track)
-        metadata = await self._run_blocking(self._db.track_metadata, track_id) or metadata
+        metadata = await self._run_blocking(self._db.track_metadata, track_id) or hit
         if not self._is_current(passage):
             return
+        # Timing comes from this hit: the timecode is where this sample ended in the song.
+        timecode = parse_timecode(hit.get("audd_timecode"))
+        song_start_at = window_end - timecode * self._speed_factor if timecode is not None else None
         self.logger.info(
             "AudD HIT: %s (passage %s, attempt %d)",
             describe(metadata),
             passage.short_id,
             passage.audd_attempts,
         )
-        self._identify(passage, track_id, metadata, via="AudD")
+        self._identify(
+            passage,
+            track_id,
+            metadata,
+            via="AudD",
+            song_start_at=song_start_at,
+            duration=hit.get("duration_seconds") or metadata.get("duration_seconds"),
+        )
         # Learn every lookup window of this passage, including the one AudD identified.
         if not passage.early_windows or passage.early_windows[-1][0] != window_end:
             passage.early_windows.append((window_end, query))
@@ -561,7 +618,14 @@ class RecognitionEngine:
                 passage.short_id,
             )
             if decision.accepted:
-                self._identify(passage, candidate.track_id, metadata, via="local")
+                self._identify(
+                    passage,
+                    candidate.track_id,
+                    metadata,
+                    via="local",
+                    song_start_at=-coherence.shift_seconds if coherence else None,
+                    duration=metadata.get("duration_seconds"),
+                )
                 return True
         return await self._judge_timeline(passage)
 
@@ -591,7 +655,14 @@ class RecognitionEngine:
             Decision.ACCEPT_COHERENT.value,
             passage.short_id,
         )
-        self._identify(passage, coherence.track_id, metadata, via="local")
+        self._identify(
+            passage,
+            coherence.track_id,
+            metadata,
+            via="local",
+            song_start_at=-coherence.shift_seconds,
+            duration=metadata.get("duration_seconds"),
+        )
         return True
 
     def _divisor(self, window_end: float) -> int:
@@ -723,8 +794,20 @@ class RecognitionEngine:
         self.audd_blocked_until = self.stream_seconds + self.audd_backoff_seconds
         self.logger.warning("AudD failed: %s; backing off %ds", reason, self.audd_backoff_seconds)
 
-    def _identify(
-        self, passage: Passage, track_id: int, metadata: dict[str, Any], *, via: str
+    @property
+    def _speed_factor(self) -> float:
+        """Real (turntable) seconds per second of the original recording, from the correction."""
+        return 1.0 + self.audd_speed_percent / 100.0
+
+    def _identify(  # noqa: PLR0913 - timing is optional and keyword-only
+        self,
+        passage: Passage,
+        track_id: int,
+        metadata: dict[str, Any],
+        *,
+        via: str,
+        song_start_at: float | None = None,
+        duration: Any = None,
     ) -> None:
         """Mark the passage identified, report metadata and start learning."""
         self.logger.info(
@@ -740,12 +823,63 @@ class RecognitionEngine:
         passage.confirmer.reset()
         passage.evidence.clear()  # not needed once identified
         passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
+        self._set_track_timing(passage, song_start_at, duration)
         if self._publish(metadata):
             self.logger.info("Reported stream metadata: %s", describe(metadata))
         else:
             # MA declined: the source has metadata of its own, or the session is gone.
             self.logger.info("Music Assistant declined our metadata; recognition stopped")
             self.stopped = True
+
+    def _set_track_timing(
+        self, passage: Passage, song_start_at: float | None, duration: Any
+    ) -> None:
+        """
+        Remember where the song started and should end in passage time (the gapless guard).
+
+        A local match's time shift is relative to the reference passage, which is assumed to
+        start with the song (true for records with gaps; a few seconds off otherwise).
+        """
+        if song_start_at is None:
+            return
+        passage.song_start_at = song_start_at
+        if isinstance(duration, bool) or not isinstance(duration, int | float) or duration <= 0:
+            self.logger.debug(
+                "No track duration known: no end guard (passage %s)", passage.short_id
+            )
+            return
+        end_at = song_start_at + duration * self._speed_factor
+        if passage.seconds > end_at + TRACK_END_GUARD_SECONDS:
+            # The track already played longer than its duration says (another version or edit).
+            self.logger.info(
+                "%s is already playing longer than its known duration (%.0fs): "
+                "no end guard for passage %s",
+                describe(passage.metadata),
+                duration,
+                passage.short_id,
+            )
+            return
+        passage.track_end_at = end_at
+        self.logger.info(
+            "Expected end of %s at %.0fs (song started at %.0fs, duration %.0fs) (passage %s)",
+            describe(passage.metadata),
+            end_at,
+            song_start_at,
+            duration,
+            passage.short_id,
+        )
+
+    def _within_song(self, passage: Passage, window_end: float) -> bool:
+        """Return whether a window lies within the identified song (with the tolerances)."""
+        if (
+            passage.song_start_at is not None
+            and window_end - SAMPLE_SECONDS < passage.song_start_at - SONG_START_TOLERANCE_SECONDS
+        ):
+            return False
+        return (
+            passage.track_end_at is None
+            or window_end <= passage.track_end_at - TRACK_END_GUARD_SECONDS
+        )
 
     # ---------------------------------------------------------------- learning
 
@@ -774,7 +908,15 @@ class RecognitionEngine:
     async def _store_early_windows(self, passage: Passage) -> None:
         """Store the lookup windows of a just-identified passage as references."""
         windows, passage.early_windows = passage.early_windows, []
-        windows = [(end, hashes) for end, hashes in windows if self._storable(passage, hashes)]
+        within = [(end, hashes) for end, hashes in windows if self._within_song(passage, end)]
+        if len(within) < len(windows):
+            self.logger.info(
+                "Not learning %d early windows outside %s (passage %s)",
+                len(windows) - len(within),
+                describe(passage.metadata),
+                passage.short_id,
+            )
+        windows = [(end, hashes) for end, hashes in within if self._storable(passage, hashes)]
         if not windows or not self._is_current(passage) or passage.track_id is None:
             return
         results = await self._run_blocking(
