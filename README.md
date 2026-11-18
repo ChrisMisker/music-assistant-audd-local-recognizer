@@ -221,9 +221,10 @@ a little fast made AudD miss about 4 in 10 tracks; samples played 2 % slower wer
    platter while it turns. It shows the average speed, e.g. *33.61 rpm / +0.82 %*.
 2. If you can, adjust the turntable's speed (many have a speed trim screw); this also makes your
    records sound right.
-3. Otherwise set **Speed correction for AudD** (advanced setting) to the opposite of the
-   measured deviation, e.g. **-0.8** for +0.82 %. If AudD still misses many tracks, try **-2**
-   (that worked best in our tests).
+3. Otherwise set **Speed correction for AudD** (advanced setting). Note that the right value is
+   not simply the measured deviation: in our test (turntable at +0.82 %) AudD did *not* recognize
+   the sample at -0.8 % or -1 %, but did at **-2 %** and -4 %. AudD seems to need the audio
+   slightly slower than the exact speed. **For a turntable that runs fast, start with -2.**
 
 ## Troubleshooting
 
