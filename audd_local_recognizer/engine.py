@@ -85,6 +85,10 @@ ACCUMULATED_WINDOWS = 2  # ... from at least this many windows
 # At most this many references per track (about two plays of a 3-minute track, ~1 MB). Older
 # plays are removed whole, oldest first; the play being learned is always kept.
 MAX_REFERENCES_PER_TRACK = 60
+# A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
+# far above that means abnormal input (noise, a broken source); it is not stored, so such a
+# source cannot blow up the database.
+MAX_LANDMARKS_PER_REFERENCE = 2000
 
 
 @dataclass(frozen=True)
@@ -406,6 +410,8 @@ class RecognitionEngine:
             if metadata is None or not self._is_current(passage):
                 return
             track_id = await self._run_blocking(self._db.upsert_track, metadata)
+            # show what is stored: a known track keeps its first metadata (see upsert_track)
+            metadata = await self._run_blocking(self._db.track_metadata, track_id) or metadata
             if not self._is_current(passage):
                 return
             self.logger.info(
@@ -562,9 +568,23 @@ class RecognitionEngine:
         except Exception:
             self.logger.exception("Could not learn window (passage %s)", passage.short_id)
 
+    def _storable(self, passage: Passage, hashes: Fingerprints) -> bool:
+        """Return False (and log) for a window too dense to be real music."""
+        landmarks = sum(len(positions) for positions in hashes.values())
+        if landmarks <= MAX_LANDMARKS_PER_REFERENCE:
+            return True
+        self.logger.warning(
+            "Not learning a window with %d landmarks (max %d; abnormal input?) (passage %s)",
+            landmarks,
+            MAX_LANDMARKS_PER_REFERENCE,
+            passage.short_id,
+        )
+        return False
+
     async def _store_early_windows(self, passage: Passage) -> None:
         """Store the lookup windows of a just-identified passage as references."""
         windows, passage.early_windows = passage.early_windows, []
+        windows = [(end, hashes) for end, hashes in windows if self._storable(passage, hashes)]
         if not windows or not self._is_current(passage) or passage.track_id is None:
             return
         results = await self._run_blocking(
@@ -593,6 +613,8 @@ class RecognitionEngine:
         self, passage: Passage, hashes: Fingerprints, window_end: float
     ) -> None:
         if not self._is_current(passage) or passage.track_id is None:
+            return
+        if not self._storable(passage, hashes):
             return
         reference_id, count = await self._run_blocking(
             self._db.add_reference,

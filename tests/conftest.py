@@ -82,6 +82,8 @@ class Harness:
     # simulate a new play of vinyl: only every n-th second's landmark repeats (None = all)
     sparse_every: int | None = None
     audd_gate: asyncio.Event | None = None
+    # holds the database lookup (find_best_match) until set: a slow database
+    lookup_gate: asyncio.Event | None = None
     engine: RecognitionEngine = field(init=False)
 
     def build(self, logger: logging.Logger) -> Harness:
@@ -95,9 +97,14 @@ class Harness:
             publish=self._publish,
             spawn=lambda coro: asyncio.get_running_loop().create_task(coro),
             logger=logger,
-            run_blocking=_run_inline,
+            run_blocking=self._run_blocking,
         )
         return self
+
+    async def _run_blocking(self, func: Any, *args: Any) -> Any:
+        if self.lookup_gate is not None and getattr(func, "__name__", "") == "find_best_match":
+            await self.lookup_gate.wait()
+        return func(*args)
 
     async def _fingerprint(self, pcm: bytes) -> Fingerprints:
         codes = decode_codes(pcm)

@@ -451,3 +451,89 @@ async def test_references_per_track_are_capped(make_harness: Any, monkeypatch: A
     assert passages[-1] in plays
     assert passages[0] not in plays
     assert len([p for _, p in refs if p == passages[-1]]) >= 9
+
+
+async def test_audd_hit_on_a_known_track_shows_the_stored_metadata(make_harness: Any) -> None:
+    """What MA shows equals what is stored, so the album does not jump between plays."""
+    h = make_harness()
+    await h.play(1, 30)
+    first_album = h.db.track_metadata(1)
+    await h.quiet(GAP)
+    h.db.prune_track(1, "none", 0)  # forget the fingerprints, keep the track: AudD again
+    await h.play(1, 30)
+    assert len(h.audd_calls) == 2
+    assert h.published[-1] == first_album
+
+
+async def test_abnormally_dense_windows_are_not_stored(
+    make_harness: Any, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(eng, "MAX_LANDMARKS_PER_REFERENCE", 5)  # the fake windows hold ~12
+    caplog.set_level(logging.WARNING)
+    h = make_harness()
+    await h.play(1, 60)
+    assert [m["title"] for m in h.published] == ["Song 1"]  # recognition itself is unaffected
+    assert h.references() == []
+    assert any("Not learning a window" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------- stale work, more stages
+
+
+async def test_g_late_database_lookup_is_discarded(make_harness: Any) -> None:
+    """A lookup of passage N that returns a strong hit after N closed changes nothing in N+1."""
+    learner = make_harness()
+    await learner.play(1, 60)  # song 1 is known: the late lookup would be a strong local hit
+    learner.engine.close()
+    gate = asyncio.Event()
+    h = make_harness(lookup_gate=gate)
+    for second in range(12):
+        h.engine.feed(music(1, second))
+        await asyncio.sleep(0)
+    late = h.engine.task
+    assert late is not None
+    assert not late.done()  # waiting on the database
+    for _ in range(GAP):
+        h.engine.feed(silence())
+    for second in range(5):
+        h.engine.feed(music(2, second))
+    new_passage = h.engine.passage
+    assert new_passage is not None
+    references_before = h.references()
+    gate.set()
+    await asyncio.wait_for(late, 5)
+    assert h.published == []  # no stale metadata
+    assert not new_passage.identified  # no track activated in N+1
+    assert h.references() == references_before  # nothing written for N or N+1
+    assert new_passage.confirmer.pending_track_id is None  # pending state untouched
+    assert list(new_passage.confirmer.history) == []
+    assert new_passage.early_windows == []
+
+
+async def test_g_late_result_leaves_pending_evidence_of_new_passage_alone(
+    make_harness: Any,
+) -> None:
+    """Evidence collected by passage N+1 survives a stale task of N finishing."""
+    learner = make_harness()
+    await learner.play(1, 60)
+    await learner.quiet(GAP)
+    await learner.play(2, 60)
+    learner.engine.close()
+    gate = asyncio.Event()
+    h = make_harness(lookup_gate=gate, sparse_every=6)
+    for second in range(12):
+        h.engine.feed(music(1, second))
+        await asyncio.sleep(0)
+    late = h.engine.task
+    assert late is not None
+    for _ in range(GAP):
+        h.engine.feed(silence())
+    h.engine.feed(music(2, 0))  # audio resumes: passage N+1 opens
+    new_passage = h.engine.passage
+    assert new_passage is not None
+    new_passage.confirmer.consider(_candidate(2, 2, 1.0))  # N+1 already holds evidence
+    history_before = list(new_passage.confirmer.history)
+    gate.set()
+    await asyncio.wait_for(late, 5)
+    assert list(new_passage.confirmer.history) == history_before
+    assert h.published == []

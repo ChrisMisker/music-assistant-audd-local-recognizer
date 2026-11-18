@@ -30,11 +30,22 @@
 
 ### Fixed
 
+- **The album no longer jumps between plays.** AudD often names a different (compilation) album
+  on every identification, and each one overwrote the stored metadata. Now the first metadata
+  of a track is kept; later results only fill in what is missing (e.g. artwork). The ISRC
+  (recording code) is stored too when AudD provides it.
+
 - **Repetitive audio could look like a strong local match.** In music with a repeating pattern
   (a drum machine, a held note) one fingerprint can occur several times in a sample, and each
   repetition counted as a separate vote. One accidental match could then look like 3–5 votes,
   enough to show a wrong title. A match now counts each distinct fingerprint only once. Found
   in a real test with Phil Collins' *In the Air Tonight*; no wrong title was shown.
+
+### Hardening
+
+- A learned window with an abnormal number of fingerprints (over 2,000; real music has ~260) is
+  not stored, so a noisy or broken source can't blow up the database.
+- Deployment scripts validate their configuration before using it in remote commands.
 
 ### Developer
 

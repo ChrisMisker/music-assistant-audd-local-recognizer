@@ -11,6 +11,7 @@ from audd_local_recognizer.audd_client import (
     AudDError,
     parse_response,
     pick_artwork,
+    pick_isrc,
 )
 
 TOKEN = "secret-token-123"  # noqa: S105 - a fake token for the tests
@@ -56,6 +57,7 @@ def test_success_is_parsed() -> None:
         "album": "20 Greatest Hits",
         "artwork": "https://deezer/500",
         "uri": "https://lis.tn/x",
+        "isrc": None,
         "audd_timecode": "00:12",
     }
 
@@ -143,3 +145,13 @@ async def test_client_success() -> None:
     meta = await client.recognize(b"RIFF")
     assert meta is not None
     assert meta["title"] == "Unforgettable"
+
+
+def test_isrc_from_any_enrichment_block() -> None:
+    assert pick_isrc({"apple_music": {"isrc": "usab12345678"}}) == "USAB12345678"
+    assert pick_isrc({"spotify": {"external_ids": {"isrc": "GBXYZ7600001"}}}) == "GBXYZ7600001"
+    assert pick_isrc({"deezer": {"isrc": "NLA123400001"}}) == "NLA123400001"
+    assert pick_isrc({"apple_music": {}, "spotify": {"external_ids": None}, "deezer": []}) is None
+    meta = parse_response(_success(deezer={"isrc": "NLA123400001", **DEEZER}))
+    assert meta is not None
+    assert meta["isrc"] == "NLA123400001"

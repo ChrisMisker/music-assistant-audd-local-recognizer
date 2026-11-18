@@ -69,6 +69,26 @@ def pick_artwork(result: dict[str, Any]) -> str | None:
     return _apple_artwork(result) or _spotify_artwork(result) or _deezer_artwork(result)
 
 
+def pick_isrc(result: dict[str, Any]) -> str | None:
+    """
+    Return the recording's ISRC from AudD's enrichment blocks, if any.
+
+    Stored as an identity hint only; recognition never depends on it.
+    """
+    apple = result.get("apple_music")
+    spotify = result.get("spotify")
+    deezer = result.get("deezer")
+    external = spotify.get("external_ids") if isinstance(spotify, dict) else None
+    for candidate in (
+        apple.get("isrc") if isinstance(apple, dict) else None,
+        external.get("isrc") if isinstance(external, dict) else None,
+        deezer.get("isrc") if isinstance(deezer, dict) else None,
+    ):
+        if value := _str(candidate):
+            return value.strip().upper()
+    return None
+
+
 def parse_result(result: Any) -> dict[str, Any] | None:
     """Turn an AudD `result` object into our metadata dict, or None if unusable."""
     if not isinstance(result, dict):
@@ -83,6 +103,7 @@ def parse_result(result: Any) -> dict[str, Any] | None:
         "album": _str(result.get("album")),
         "artwork": pick_artwork(result),
         "uri": _str(result.get("song_link")),
+        "isrc": pick_isrc(result),
         "audd_timecode": _str(result.get("timecode")),
     }
 

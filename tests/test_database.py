@@ -217,3 +217,21 @@ def test_open_database_keeps_a_good_file(db_path: Path) -> None:
     reopened, moved = open_database(db_path)
     assert moved is None
     assert reopened.stats().tracks == 1
+
+
+def test_metadata_of_a_known_track_stays_stable(db_path: Path) -> None:
+    """AudD names another compilation on every hit; the first album stays, gaps are filled."""
+    db = FingerprintDatabase(db_path)
+    first = {**META, "album": "20 Greatest Hits", "artwork": None, "isrc": None}
+    track = db.upsert_track(first)
+    later = {**META, "album": "Route 66", "artwork": "https://art/1.jpg", "isrc": "USCA29900001"}
+    assert db.upsert_track(later) == track
+    stored = db.track_metadata(track)
+    assert stored is not None
+    assert stored["album"] == "20 Greatest Hits"  # kept
+    assert stored["artwork"] == "https://art/1.jpg"  # filled
+    assert stored["isrc"] == "USCA29900001"  # filled
+    # an emptier result never removes what is stored
+    db.upsert_track({**META, "album": None, "artwork": None})
+    assert db.track_metadata(track) == stored
+    assert db.track_metadata(9999) is None

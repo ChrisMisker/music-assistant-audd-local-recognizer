@@ -33,6 +33,23 @@ die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 remote() { ssh "${SSH_OPTS[@]}" "$HA_USER@$HA_HOST" "$@"; }
 
+# Values end up inside remote shell commands (single-quoted). Only allow characters that can
+# never break that quoting or add commands, and no path traversal.
+check_safe() {  # name value [extra allowed chars]
+  local name="$1" value="$2" extra="${3:-}"
+  [[ "$value" =~ ^[A-Za-z0-9_./:@${extra}-]*$ ]] || die "$name contains unsafe characters: '$value'"
+  [[ "$value" != *..* ]] || die "$name must not contain '..': '$value'"
+}
+check_safe HA_HOST "$HA_HOST"
+check_safe HA_USER "$HA_USER"
+[[ "$HA_SSH_PORT" =~ ^[0-9]+$ ]] || die "HA_SSH_PORT must be a number"
+check_safe REMOTE_SRC "$REMOTE_SRC"
+check_safe MA_CONTAINER "$MA_CONTAINER"
+check_safe MA_DATA_DIR "$MA_DATA_DIR"
+check_safe DOCKER "$DOCKER" " "        # e.g. "sudo -n docker"
+check_safe REMOTE_SUDO "$REMOTE_SUDO" " "
+[[ "$MA_DATA_DIR" == /* ]] || die "MA_DATA_DIR must be an absolute path"
+
 # Resolve the MA container (configured name or the single running music_assistant one).
 resolve_container() {
   if [[ -n "$MA_CONTAINER" ]]; then
@@ -47,15 +64,18 @@ resolve_container() {
     die "several music_assistant containers found; set MA_CONTAINER to one of: $(echo $found)"
   fi
   MA_CONTAINER="$found"
+  check_safe MA_CONTAINER "$MA_CONTAINER"
 }
 
 # Python and provider directory inside the container.
 resolve_runtime() {
   CONTAINER_PY="$(remote "$DOCKER exec '$MA_CONTAINER' sh -c 'command -v python3 || command -v python'")"
   [[ -n "$CONTAINER_PY" ]] || die "no python found in $MA_CONTAINER"
+  check_safe CONTAINER_PY "$CONTAINER_PY"
   PROVIDERS_DIR="$(remote "$DOCKER exec '$MA_CONTAINER' '$CONTAINER_PY' -c \
     'import os, music_assistant.providers as p; print(os.path.dirname(p.__file__))'")"
   [[ "$PROVIDERS_DIR" == */music_assistant/providers ]] \
     || die "unexpected MA providers dir: '$PROVIDERS_DIR'"
+  check_safe PROVIDERS_DIR "$PROVIDERS_DIR"
   PROVIDER_DEST="$PROVIDERS_DIR/$PACKAGE"
 }

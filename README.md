@@ -87,11 +87,20 @@ AudD is a commercial API. **To identify new music you need an AudD account and A
   [audd.io/pricing](https://audd.io/pricing/) for current prices.
 
 How many requests to expect:
-- **An unknown track** usually costs **1 to 3 requests**. AudD sometimes needs a second try,
-  and the provider waits ~24 seconds into a track before the first try.
-- **A track you've played before** costs **0 requests**: it is recognized locally.
-- Example: learning 10 LPs (~100 tracks) takes roughly 100–300 requests. After that, replaying
-  them is free.
+- **A track you've played before** usually costs **0 requests**: it is recognized locally.
+  Occasionally 1, when local recognition takes longer than ~24 seconds.
+- **An unknown track** usually costs **1 to 3 requests**: AudD often doesn't recognize the
+  first sample of a track and needs another try.
+- **A track AudD can't identify** keeps being tried while it plays, but sparingly. The first
+  request is sent after ~24 seconds of the track, the next ones 30 seconds apart (three in
+  total), then every 90 seconds, with a hard maximum of **8 requests per track**. A typical
+  3–5 minute track that AudD doesn't know therefore costs 4–5 requests; 8 is only reached by
+  tracks of 9 minutes or longer.
+- Requests stop as soon as the track is identified. There are never two requests within 30
+  seconds of each other. After an AudD or network error the provider pauses (1 minute, doubling
+  up to 15 minutes).
+- Example: learning 10 LPs (~100 tracks) takes roughly 100–400 requests, depending on how well
+  AudD knows them. After that, replaying them is (nearly) free.
 
 Without a token the provider still recognizes everything it has already learned. It just can't
 identify or learn new music.
@@ -101,8 +110,11 @@ settings in Music Assistant.
 
 ## Privacy
 
-- **Only audio samples of music not recognized locally** are sent to AudD: about 12 seconds of
-  mono audio per request, together with your API token. Nothing else is sent.
+- **Only audio of music that isn't recognized locally** is sent to AudD: one sample of about
+  12 seconds of mono audio per request, together with your API token. A track may need several
+  requests (up to 8, see [How many requests to expect](#about-audd-a-paid-service-with-a-free-trial)),
+  so several samples of the same track can be sent. Nothing else is sent.
+- **Known tracks are recognized locally**; no audio of them is sent anywhere.
 - The **local fingerprints are computed by this provider** (Panako fingerprints via
   [audalign](https://pypi.org/project/audalign/)) and are stored only on your Music Assistant
   server, in `audd_local_recognizer/fingerprints.sqlite3` in its data folder. They are never

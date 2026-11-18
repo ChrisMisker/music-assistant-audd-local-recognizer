@@ -87,6 +87,10 @@ def track_key(metadata: dict[str, Any]) -> str:
     return f"{_normalize(metadata['artist'])}\x1f{_normalize(metadata['title'])}"
 
 
+def _dump(metadata: dict[str, Any]) -> str:
+    return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+
+
 class FingerprintDatabase:
     """SQLite-backed track/reference/landmark store."""
 
@@ -147,19 +151,41 @@ class FingerprintDatabase:
                 db.execute("DELETE FROM tracks WHERE id=?", (track_id,))
 
     def upsert_track(self, metadata: dict[str, Any]) -> int:
-        """Insert or refresh a track by artist/title and return its id."""
+        """
+        Insert a track, or complete an existing one, and return its id.
+
+        Metadata of a known track stays stable: AudD often names a different (compilation)
+        album on every hit, so the values stored first are kept and a new result only fills
+        fields that are still empty (e.g. artwork or ISRC that an earlier result lacked).
+        """
         key = track_key(metadata)
-        payload = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
         with self._transaction() as db:
-            db.execute(
-                """INSERT INTO tracks(track_key, metadata_json) VALUES(?, ?)
-                   ON CONFLICT(track_key) DO UPDATE SET
-                     metadata_json=excluded.metadata_json,
-                     updated_at=CURRENT_TIMESTAMP""",
-                (key, payload),
-            )
-            row = db.execute("SELECT id FROM tracks WHERE track_key=?", (key,)).fetchone()
-        return int(row[0])
+            row = db.execute(
+                "SELECT id, metadata_json FROM tracks WHERE track_key=?", (key,)
+            ).fetchone()
+            if row is None:
+                cur = db.execute(
+                    "INSERT INTO tracks(track_key, metadata_json) VALUES(?, ?)",
+                    (key, _dump(metadata)),
+                )
+                return int(cur.lastrowid or 0)
+            stored: dict[str, Any] = json.loads(str(row[1]))
+            merged = {**stored}
+            for field_name, value in metadata.items():
+                if value not in (None, "") and merged.get(field_name) in (None, ""):
+                    merged[field_name] = value
+            if merged != stored:
+                db.execute(
+                    "UPDATE tracks SET metadata_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (_dump(merged), row[0]),
+                )
+            return int(row[0])
+
+    def track_metadata(self, track_id: int) -> dict[str, Any] | None:
+        """Return the stored metadata of a track."""
+        with self._transaction() as db:
+            row = db.execute("SELECT metadata_json FROM tracks WHERE id=?", (track_id,)).fetchone()
+        return None if row is None else dict(json.loads(str(row[0])))
 
     def add_reference(
         self,
