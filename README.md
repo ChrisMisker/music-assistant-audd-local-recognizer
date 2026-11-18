@@ -241,8 +241,10 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `AudD: no match: …` | AudD found nothing; the reason follows (e.g. `no result`, `error 300`). |
 | `No AudD API token configured` | Only local recognition is possible. |
 
-If nothing is recognized, check that the source allows audio analysis, that the provider
-is enabled, and that music is above the silence threshold (the `audio resumed at … dBFS`
+If nothing is recognized, check that the source allows audio analysis (in recent Music Assistant
+Nightlies: **"Allow analysis of the audio input"** in the settings of the Sendspin player with
+the audio input, or in the VBAN Receiver settings; on by default), that your source is selected
+in this provider's settings, and that music is above the silence threshold (the `audio resumed at … dBFS`
 log line shows the level).
 
 ## Licence
