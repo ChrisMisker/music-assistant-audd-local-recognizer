@@ -16,17 +16,15 @@ recognized **locally**, without any external service.
 
 ## What's new
 
-**0.7.0** *(in testing, not released yet)*
+**0.7.0** (2026-11-18)
 - ⚠️ **Choose your audio source:** "Recognize all live audio sources" is now off by default. After
   updating, open the provider's settings and select your source (e.g. your turntable), or nothing
   is recognized.
-- Faster local recognition when you replay a record: weak matches now add up over consecutive
-  lookups.
-- The database stays small: only the two most recent plays are kept per track (see
-  [Disk space](#disk-space)).
-- An update can never stop the provider because of an old or damaged database; it starts a new
-  one and logs a warning.
-- Removing the provider also removes its database.
+- **Speed correction for AudD**: if your turntable runs a little fast or slow, AudD misses many
+  tracks. With a -2 % correction our test went from ~6 to **10 of 10** tracks identified. See
+  [Questions](#questions).
+- Faster local recognition when you replay a record; the database stays small (two plays per
+  track); updates can't break the database; album art fixes; debugging options.
 
 **0.6.0**: first public release.
 

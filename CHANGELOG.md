@@ -1,75 +1,60 @@
 # Changelog
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-11-18)
 
-### ⚠️ Changed: choose your audio source
+Much better recognition on real vinyl, a database that stays small, and tools to find out why a
+track isn't recognized. Tested on a real turntable: with the new speed correction **10 of 10
+tracks were identified** (before: about 6 in 10), with **0.9 AudD requests per track** (before:
+about 3) and in **~27 seconds** (before: ~56 s); known tracks were recognized locally in ~20–25 s.
+
+### ⚠️ Action needed: choose your audio source
 
 - **"Recognize all live audio sources" is now off by default**, following the Music Assistant
   maintainers' advice: you choose which live sources (e.g. your turntable) are analysed.
   **If you never changed this setting, recognition stops after the update until you open the
   provider's settings and select your source** under "Audio sources to recognize" (or turn
-  "Recognize all live audio sources" back on). The log says so when a source is skipped, and
+  "Recognize all live audio sources" back on). The log tells you when a source is skipped, and
   warns at startup when no source is selected.
+
+### New
+
+- **Speed correction for AudD (%)** (advanced setting, default 0). AudD is sensitive to a
+  turntable's speed: a turntable running slightly fast made AudD miss about 4 in 10 tracks,
+  including well-known ones. Samples sent to AudD can now be played a little slower or faster;
+  local recognition is not affected. **For a turntable that runs fast, start with -2.** The README
+  explains how to measure your turntable with a phone app.
+- **Debugging aids** (advanced settings, off by default): *Save AudD samples for debugging* keeps
+  the last 40 samples sent to AudD with their outcome and measurements; *Record the input stream
+  for debugging* records the live input (up to 60 minutes). A no-match now logs AudD's reason.
 
 ### Improved
 
 - **Faster local recognition of replays.** Weak but genuine matches now add up over consecutive
-  lookups for the same track (at least 2 votes per window, 6 in total from 2 or more windows
-  within ~24 s). On real vinyl a replay repeats only 2–4 votes per window, so a track that just
-  missed the threshold window after window is now recognized sooner, often without an AudD
-  call. Accidental matches (1 vote in every real test so far) never count.
-- **The database no longer grows without limit.** Each track keeps the fingerprints of at most
-  its **two most recent plays**; older plays are removed automatically. Suggested by the Music
-  Assistant maintainers.
+  lookups of the same track, so a replay is often recognized without asking AudD.
+- **The database stays small.** Each track keeps the fingerprints of its **two most recent plays**;
+  older plays are removed automatically (suggested by the Music Assistant maintainers).
 - **Updates can never stop the provider because of the database.** An incompatible or damaged
-  database file is moved aside (`fingerprints.sqlite3.incompatible`) and a new one is started,
-  with a warning in the log.
+  database file is moved aside (`fingerprints.sqlite3.incompatible`) and a new one is started.
 - **Removing the provider also removes its fingerprint database.**
-- Clearer logs: every identification logs how and after how many seconds
-  (`Identified … via local after 31s`), and local candidates show their accumulated votes.
+- Clearer logs: every identification says how and when (`Identified … via local after 22s`).
 
 ### Fixed
 
-- **Missing album art on some tracks.** When Deezer has no cover it returns an empty placeholder
-  image, which was stored as the artwork, so the player showed none (and a real cover found later
-  could not replace it). The placeholder is now ignored, a real cover replaces it, and stored
-  placeholders are cleaned up at startup.
-- **The album no longer jumps between plays.** AudD often names a different (compilation) album
-  on every identification, and each one overwrote the stored metadata. Now the first metadata
-  of a track is kept; later results only fill in what is missing (e.g. artwork). The ISRC
-  (recording code) is stored too when AudD provides it.
-
 - **Repetitive audio could look like a strong local match.** In music with a repeating pattern
-  (a drum machine, a held note) one fingerprint can occur several times in a sample, and each
-  repetition counted as a separate vote. One accidental match could then look like 3–5 votes,
-  enough to show a wrong title. A match now counts each distinct fingerprint only once. Found
-  in a real test with Phil Collins' *In the Air Tonight*; no wrong title was shown.
-
-### Troubleshooting
-
-- New advanced setting **"Speed correction for AudD (%)"** (default 0). A turntable that runs a
-  little fast or slow made AudD miss many tracks in our tests (a sample played 2 % slower was
-  recognized). The correction is applied only to the samples sent to AudD.
-- Quiet passages no longer put a harmless "divide by zero" warning from the fingerprint library
-  in the Music Assistant log.
-
-- New advanced setting **"Save AudD samples for debugging"** (off by default): keeps the last 40
-  samples sent to AudD as WAV, with their outcome and measurements (level, clipping, left/right
-  correlation), in the provider's data folder. Useful to hear why AudD misses a track.
-- A no-match now logs AudD's reason (`no result`, `error 300`, …).
-- New advanced setting **"Record the input stream for debugging"** (off by default): records the
-  live input as the recognizer receives it (WAV, ~10 MB per minute, at most 60 minutes in total).
+  (a drum machine, a held note) one fingerprint repeated in a sample counted as several votes, so
+  one accidental match could look strong enough to show a wrong title. Each distinct fingerprint
+  now counts once. (Found in a test with *In the Air Tonight*; no wrong title was shown.)
+- **The album no longer jumps between plays.** AudD often names a different compilation album on
+  every identification; the first stored metadata is now kept and later results only fill in what
+  is missing. The ISRC (recording code) is stored when available.
+- **Missing album art on some tracks.** Deezer's empty "no cover" image was stored as artwork. It is
+  now ignored, a real cover can replace it, and stored placeholders are cleaned up at startup.
+- Quiet passages no longer log a harmless "divide by zero" warning.
 
 ### Hardening
 
-- A learned window with an abnormal number of fingerprints (over 2,000; real music has ~260) is
-  not stored, so a noisy or broken source can't blow up the database.
-- Deployment scripts validate their configuration before using it in remote commands.
-
-### Developer
-
-- `scripts/vote-report.sh`: per track play, how and when it was identified, AudD calls and local
-  votes, plus the vote distribution of real versus accidental matches.
+- A learned window with an abnormal number of fingerprints is not stored, so a noisy or broken
+  source can't blow up the database.
 
 ## 0.6.0 (2026-11-17): first public release
 
