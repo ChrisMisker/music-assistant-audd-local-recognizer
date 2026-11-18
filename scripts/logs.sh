@@ -21,8 +21,9 @@ done
 
 resolve_container
 if [[ $FILTER == 1 ]]; then
-  remote "$DOCKER logs $FOLLOW --since '$SINCE' '$MA_CONTAINER' 2>&1 \
-    | grep --line-buffered -iE 'audd|local_recognizer|AudD \+ Local'"
+  # filter on the Mac: the HA host has BusyBox grep (no --line-buffered)
+  remote "$DOCKER logs $FOLLOW --since '$SINCE' '$MA_CONTAINER' 2>&1" \
+    | grep --line-buffered -iE 'audd|local_recognizer|AudD \+ Local'
 else
   remote "$DOCKER logs $FOLLOW --since '$SINCE' '$MA_CONTAINER' 2>&1"
 fi
