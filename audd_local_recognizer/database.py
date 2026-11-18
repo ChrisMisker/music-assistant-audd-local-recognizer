@@ -12,7 +12,7 @@ import sqlite3
 import unicodedata
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .audd_client import is_placeholder_artwork
 from .fingerprints import Fingerprints, QueryMatch, score_reference
@@ -53,6 +53,25 @@ CREATE INDEX IF NOT EXISTS idx_landmarks_hash ON landmarks(fingerprint_hash);
 CREATE INDEX IF NOT EXISTS idx_reference_track ON reference_windows(track_id);
 CREATE INDEX IF NOT EXISTS idx_reference_passage ON reference_windows(passage_id);
 """
+
+
+class MatchRow(NamedTuple):
+    """One stored landmark that shares its hash with a query (raw evidence of a lookup)."""
+
+    fingerprint_hash: str
+    position: int
+    track_id: int
+    passage_id: str
+    passage_offset_seconds: float
+
+
+@dataclass(frozen=True)
+class LocalLookup:
+    """Result of one local lookup: the best single reference plus every shared-hash row."""
+
+    best: QueryMatch | None
+    metadata: dict[str, Any] | None
+    rows: list[MatchRow]
 
 
 class SchemaVersionError(RuntimeError):
@@ -284,16 +303,29 @@ class FingerprintDatabase:
         References learned in exclude_passage_id are ignored, so a passage can never
         recognize itself from windows it learned seconds earlier.
         """
-        if not query:
+        lookup = self.lookup(query, exclude_passage_id)
+        if lookup.best is None or lookup.metadata is None:
             return None
+        return lookup.best, lookup.metadata
+
+    def lookup(self, query: Fingerprints, exclude_passage_id: str | None = None) -> LocalLookup:
+        """
+        Return the best single reference for a query plus every shared-hash row.
+
+        The rows let the engine add evidence up over a passage (time-consistent accumulation).
+        References learned in exclude_passage_id are ignored, as in find_best_match.
+        """
+        if not query:
+            return LocalLookup(None, None, [])
         hashes = list(query)
+        rows: list[MatchRow] = []
         per_reference: dict[int, tuple[int, str, list[tuple[str, int]]]] = {}
         with self._transaction() as db:
             for start in range(0, len(hashes), _QUERY_BATCH):
                 batch = hashes[start : start + _QUERY_BATCH]
                 placeholders = ",".join("?" * len(batch))
-                for reference_id, track_id, passage_id, fp_hash, position in db.execute(
-                    f"""SELECT l.reference_id, r.track_id, r.passage_id,
+                for reference_id, track_id, passage_id, offset, fp_hash, position in db.execute(
+                    f"""SELECT l.reference_id, r.track_id, r.passage_id, r.passage_offset_seconds,
                                l.fingerprint_hash, l.position
                         FROM landmarks l JOIN reference_windows r ON r.id = l.reference_id
                         WHERE l.fingerprint_hash IN ({placeholders})
@@ -302,24 +334,24 @@ class FingerprintDatabase:
                 ):
                     entry = per_reference.setdefault(reference_id, (track_id, passage_id, []))
                     entry[2].append((fp_hash, position))
+                    rows.append(MatchRow(fp_hash, position, track_id, passage_id, offset))
 
             best: QueryMatch | None = None
             for reference_id in sorted(per_reference):
-                track_id, passage_id, rows = per_reference[reference_id]
-                shared, offset, votes, ratio = score_reference(query, rows)
+                track_id, passage_id, ref_rows = per_reference[reference_id]
+                shared, offset, votes, ratio = score_reference(query, ref_rows)
                 candidate = QueryMatch(
                     track_id, reference_id, passage_id, shared, offset, votes, ratio
                 )
                 if best is None or (votes, ratio) > (best.best_votes, best.ratio):
                     best = candidate
-            if best is None:
-                return None
-            row = db.execute(
-                "SELECT metadata_json FROM tracks WHERE id=?", (best.track_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return best, json.loads(str(row[0]))
+            metadata = None
+            if best is not None:
+                row = db.execute(
+                    "SELECT metadata_json FROM tracks WHERE id=?", (best.track_id,)
+                ).fetchone()
+                metadata = None if row is None else json.loads(str(row[0]))
+        return LocalLookup(best, metadata, rows)
 
     def prune_track(self, track_id: int, keep_passage_id: str, max_plays: int) -> int:
         """

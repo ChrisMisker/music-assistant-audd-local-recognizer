@@ -19,6 +19,8 @@ recognized **locally**, without any external service.
 **0.8.0** *(in testing, not released yet)*
 - **Faster recognition at the start of known tracks** (on by default): replays are usually
   recognized locally within 12–18 seconds, without AudD. Uses ~35 % more disk space.
+- **More reliable local recognition of replays:** fingerprints that line up in time with an
+  earlier play add up over the whole track (18–24 s in our tests, no wrong titles).
 - Fixes: more cases of missing album art.
 
 **0.7.0** (2026-11-18)
@@ -243,7 +245,8 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
 | `AudD attempt n/8` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
 | `Identified … via local after 31s` | The track was recognized (locally or via AudD), and when. |
-| `LOCAL CANDIDATE: … votes=2 acc=4 -> pending` | A weak match; votes of consecutive lookups add up (6 needed). |
+| `LOCAL CANDIDATE: … votes=2 acc=4 -> pending` | A weak match; `acc` adds up the votes of this track that line up in time with an earlier play (6 needed). |
+| `LOCAL HIT: … lookups=3 shift=+0.42s … -> accepted (time-consistent)` | Recognized from evidence added up over several lookups. |
 | `Learned … references` | Fingerprints stored for future local recognition. |
 | `AudD: no match: …` | AudD found nothing; the reason follows (e.g. `no result`, `error 300`). |
 | `No AudD API token configured` | Only local recognition is possible. |

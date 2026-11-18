@@ -14,6 +14,14 @@
 
 ### Improved
 
+- **Known tracks are recognized more reliably, also on a worn or slightly different play.** On
+  vinyl only a few fingerprints repeat exactly on every play, so the provider now adds up the
+  evidence of a whole track, but only fingerprints that line up *in time* with an earlier play
+  (a real replay keeps the same timing; coincidental matches don't). Measured offline on three
+  real recordings: replays recognized locally after **18–24 seconds**, including tracks that
+  previously needed AudD or were not recognized at all, and **no wrong titles** in ten unknown
+  tracks of 3–5 minutes each. This replaces the 0.7 rule that summed votes over the last four
+  lookups without checking the timing.
 - When AudD is due but local recognition is already close to a known track, the provider waits
   one more moment for local confirmation instead of spending an AudD request.
 

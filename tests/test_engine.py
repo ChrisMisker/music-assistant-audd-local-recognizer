@@ -12,12 +12,14 @@ import pytest
 
 from audd_local_recognizer import engine as eng
 from audd_local_recognizer.audd_client import AudDError, AudDNoMatch
+from audd_local_recognizer.database import MatchRow
 from audd_local_recognizer.engine import (
     Decision,
     GapDetector,
     GapEvent,
     GapSettings,
     MatchConfirmer,
+    TimelineEvidence,
 )
 from audd_local_recognizer.fingerprints import QueryMatch
 from tests.conftest import music, silence
@@ -76,44 +78,72 @@ def test_match_confirmer_rules() -> None:
     assert confirmer.consider(_candidate(3, 50, 0.3)) is Decision.REJECT
 
 
-def test_weak_windows_of_one_track_accumulate() -> None:
-    """The real replay pattern 2, <=1, 2, 4 (v0.5.3 re-test) identifies at the 4th lookup."""
-    confirmer = MatchConfirmer()
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
-    assert confirmer.consider(_candidate(1, 1, 1.0)) is Decision.REJECT
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
-    assert confirmer.consider(_candidate(1, 4, 1.0)) is Decision.ACCEPT_ACCUMULATED
+def _rows(track: int, passage: str, shifts: list[tuple[str, float]]) -> list[MatchRow]:
+    """Return stored rows for hashes that each sit at a given shift (query position 0)."""
+    return [MatchRow(h, round(shift), track, passage, 0.0) for h, shift in shifts]
 
 
-def test_accumulation_needs_two_windows_and_the_same_track() -> None:
-    confirmer = MatchConfirmer()
-    assert confirmer.consider(_candidate(1, 4, 1.0)) is Decision.PENDING
-    assert confirmer.consider(_candidate(2, 4, 1.0)) is Decision.PENDING  # other track: no sum
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.ACCEPT_ACCUMULATED  # 4 + 2
+def test_time_consistent_evidence_adds_up_across_lookups() -> None:
+    """The real replay pattern 2, 2, 2: three weak windows at one shift make 6 votes."""
+    evidence = TimelineEvidence(frame_seconds=1.0)
+    for lookup in range(3):
+        hashes = {f"h{lookup}a": [0], f"h{lookup}b": [0]}
+        evidence.add(hashes, _rows(1, "ref", [(h, 30.0) for h in hashes]), 0.0)
+    best = evidence.best()
+    assert best is not None
+    assert (best.track_id, best.reference_passage_id, best.votes, best.lookups) == (1, "ref", 6, 3)
+    assert best.latest_votes == 2
+    assert best.shift_seconds == pytest.approx(30.0)
 
 
-def test_one_vote_windows_never_accumulate() -> None:
-    confirmer = MatchConfirmer()
-    for _ in range(20):
-        assert confirmer.consider(_candidate(1, 1, 1.0)) is Decision.REJECT
+def test_evidence_at_random_shifts_never_adds_up() -> None:
+    """Accidental 2-vote windows over a whole long passage stay at 2 coherent votes."""
+    evidence = TimelineEvidence(frame_seconds=1.0)
+    for lookup in range(50):
+        shift = 7.0 * lookup  # every lookup at another shift
+        hashes = {f"x{lookup}a": [0], f"x{lookup}b": [0]}
+        evidence.add(hashes, _rows(2, "ref", [(h, shift) for h in hashes]), 0.0)
+    best = evidence.best()
+    assert best is not None
+    assert best.votes == 2
 
 
-def test_old_evidence_expires() -> None:
-    confirmer = MatchConfirmer()
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
-    for _ in range(eng.ACCUMULATION_LOOKUPS - 1):
-        confirmer.record_miss()
-    # the 2-vote window is now older than the last ACCUMULATION_LOOKUPS lookups
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING
-    assert confirmer.consider(_candidate(1, 2, 1.0)) is Decision.PENDING  # 2 + 2 = 4 < 6
+def test_a_hash_counts_once_per_cluster() -> None:
+    """Overlapping windows (and overlapping references) see the same hash again: one vote."""
+    evidence = TimelineEvidence(frame_seconds=1.0)
+    for query_start in (0.0, 6.0):  # the hash at passage time 8 s is in both windows
+        position = int(8 - query_start)
+        rows = [MatchRow("same", 8, 1, "ref", 0.0), MatchRow("same", 2, 1, "ref", 6.0)]
+        evidence.add({"same": [position]}, rows, query_start)
+    best = evidence.best()
+    assert best is not None
+    assert (best.votes, best.lookups) == (1, 2)
 
 
-def test_miss_breaks_consecutive_run_but_not_accumulation() -> None:
-    confirmer = MatchConfirmer()
-    assert confirmer.consider(_candidate(1, 3, 1.0)) is Decision.PENDING
-    confirmer.record_miss()
-    # not consecutive any more, but 3 + 3 within the last lookups adds up
-    assert confirmer.consider(_candidate(1, 3, 1.0)) is Decision.ACCEPT_ACCUMULATED
+def test_evidence_is_kept_apart_per_reference_passage_and_track() -> None:
+    evidence = TimelineEvidence(frame_seconds=1.0)
+    evidence.add({"a": [0], "b": [0]}, _rows(1, "play-1", [("a", 5.0), ("b", 5.0)]), 0.0)
+    evidence.add({"c": [0], "d": [0]}, _rows(1, "play-2", [("c", 5.0), ("d", 5.0)]), 0.0)
+    evidence.add({"e": [0]}, _rows(2, "play-1", [("e", 5.0)]), 0.0)
+    best = evidence.best()
+    assert best is not None
+    assert best.votes == 2
+    track_2 = evidence.best(track_id=2)
+    assert track_2 is not None
+    assert track_2.votes == 1
+    evidence.clear()
+    assert evidence.best() is None
+
+
+def test_shift_tolerance_is_about_015_seconds() -> None:
+    evidence = TimelineEvidence(frame_seconds=0.01)
+    # positions in 10 ms steps: 0.10 s apart still agree, 0.40 s apart do not
+    evidence.add({"a": [0]}, [MatchRow("a", 1000, 1, "ref", 0.0)], 0.0)
+    evidence.add({"b": [0]}, [MatchRow("b", 1010, 1, "ref", 0.0)], 0.0)
+    evidence.add({"c": [0]}, [MatchRow("c", 1040, 1, "ref", 0.0)], 0.0)
+    best = evidence.best()
+    assert best is not None
+    assert best.votes == 2
 
 
 # ---------------------------------------------------------------- acceptance A-H
@@ -418,10 +448,10 @@ async def test_early_windows_of_a_closed_passage_are_never_stored(make_harness: 
     assert all(songs_in(w) for w in h.windows)
 
 
-# ---------------------------------------------------------------- v0.7: accumulation and cap
+# ---------------------------------------------------------------- time-consistent evidence, cap
 
 
-async def test_sparse_replay_is_identified_by_accumulated_evidence(
+async def test_sparse_replay_is_identified_by_time_consistent_evidence(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A replay whose windows each repeat only 2 landmarks is still recognized locally."""
@@ -429,12 +459,18 @@ async def test_sparse_replay_is_identified_by_accumulated_evidence(
     h = make_harness()
     await h.play(1, 60)
     await h.quiet(GAP)
-    h.sparse_every = 6  # every 12 s window now shares exactly 2 landmarks with the references
-    await h.play(1, 40)
-    assert len(h.audd_calls) == 1  # only the first play; the replay never needed AudD
+    h.engine.close()
+    # a new stream without AudD: every 12 s window shares exactly 2 landmarks (every 6th second)
+    # with the first play, and overlapping windows share one of them, so distinct votes grow
+    # 2, 3, 4, 5, 6: identified at the 5th lookup (36 s)
+    replay = make_harness(has_token=False, sparse_every=6)
+    await replay.play(1, 40)
     hits = local_hits(caplog)
     assert len(hits) == 1
-    assert "accepted (accumulated)" in hits[0]
+    assert "accepted (time-consistent)" in hits[0]
+    assert "acc=6" in hits[0]
+    assert "lookups=5" in hits[0]
+    assert "shift=+0.00s" in hits[0]
     assert any("Identified Artist 1 - Song 1 via local" in r.getMessage() for r in caplog.records)
 
 
@@ -504,7 +540,8 @@ async def test_g_late_database_lookup_is_discarded(make_harness: Any) -> None:
     assert not new_passage.identified  # no track activated in N+1
     assert h.references() == references_before  # nothing written for N or N+1
     assert new_passage.confirmer.pending_track_id is None  # pending state untouched
-    assert list(new_passage.confirmer.history) == []
+    assert new_passage.confirmer.latest is None
+    assert new_passage.evidence.lookups == 0
     assert new_passage.early_windows == []
 
 
@@ -530,10 +567,11 @@ async def test_g_late_result_leaves_pending_evidence_of_new_passage_alone(
     new_passage = h.engine.passage
     assert new_passage is not None
     new_passage.confirmer.consider(_candidate(2, 2, 1.0))  # N+1 already holds evidence
-    history_before = list(new_passage.confirmer.history)
+    new_passage.evidence.add({"h": [0]}, [MatchRow("h", 3, 2, "ref", 0.0)], 0.0)
     gate.set()
     await asyncio.wait_for(late, 5)
-    assert list(new_passage.confirmer.history) == history_before
+    assert new_passage.confirmer.latest == (2, 2)
+    assert new_passage.evidence.lookups == 1
     assert h.published == []
 
 

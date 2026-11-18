@@ -31,6 +31,10 @@ DENSITY_DIVISOR = 16
 # is the rate the density and thresholds were validated at.
 FINGERPRINT_SAMPLE_RATE = 44100
 
+# Duration of one Panako time step (the "position" of a hash): audalign's FFT window is 4096
+# samples with 50% overlap, so the hop is 2048 samples at FINGERPRINT_SAMPLE_RATE (~46 ms).
+PANAKO_FRAME_SECONDS = 2048 / FINGERPRINT_SAMPLE_RATE
+
 SILENCE_FLOOR_DBFS = -120.0
 
 Fingerprints = dict[str, list[int]]

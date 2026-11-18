@@ -82,7 +82,7 @@ class Harness:
     # simulate a new play of vinyl: only every n-th second's landmark repeats (None = all)
     sparse_every: int | None = None
     audd_gate: asyncio.Event | None = None
-    # holds the database lookup (find_best_match) until set: a slow database
+    # holds the database lookup until set: a slow database
     lookup_gate: asyncio.Event | None = None
     # collect AudD debug samples (None = the option is off)
     samples: list[tuple[bytes, dict[str, Any]]] | None = None
@@ -106,6 +106,7 @@ class Harness:
             save_sample=self._save_sample if self.samples is not None else None,
             audd_speed_percent=self.audd_speed_percent,
             fast_start_seconds=self.fast_start_seconds,
+            frame_seconds=1.0,  # the fake fingerprinter's positions are seconds
         )
         return self
 
@@ -114,7 +115,7 @@ class Harness:
         self.samples.append((wav, info))
 
     async def _run_blocking(self, func: Any, *args: Any) -> Any:
-        if self.lookup_gate is not None and getattr(func, "__name__", "") == "find_best_match":
+        if self.lookup_gate is not None and getattr(func, "__name__", "") == "lookup":
             await self.lookup_gate.wait()
         return func(*args)
 

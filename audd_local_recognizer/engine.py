@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
@@ -35,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from .audd_client import AudDError, AudDNoMatch
 from .fingerprints import (
     DENSITY_DIVISOR,
+    PANAKO_FRAME_SECONDS,
     Fingerprints,
     PcmFormat,
     QueryMatch,
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable, Coroutine
 
-    from .database import FingerprintDatabase
+    from .database import FingerprintDatabase, LocalLookup, MatchRow
 
 # Window and cadence (seconds of passage audio).
 SAMPLE_SECONDS = 12
@@ -92,13 +92,16 @@ STRONG_RATIO = 0.60
 CONFIRM_VOTES = 3
 CONFIRM_RATIO = 0.60
 CONFIRMATIONS_REQUIRED = 2
-# Accumulated evidence: on a new play of a record only 2-4 votes per window repeat (vinyl differs
-# a little every play), so weak but genuine windows add up per track over the last few lookups.
-# Accidental collisions gave at most 1 vote in every real test, so they never count.
-ACCUMULATION_LOOKUPS = 4  # ~24 s of lookups
-ACCUMULATION_MIN_VOTES = 2  # a window counts from this many votes (and CONFIRM_RATIO)
-ACCUMULATED_VOTES = 6  # total needed ...
-ACCUMULATED_WINDOWS = 2  # ... from at least this many windows
+# Time-consistent evidence: on a new play of a record only 2-4 votes per window repeat (vinyl
+# differs a little every play), so the votes of every lookup of a passage add up per (track,
+# reference passage), but only those at the same absolute time shift between this passage and the
+# earlier play. Genuine replays stay within +-0.15 s over minutes; accidental hits fall at random
+# shifts. Offline on three real sessions (2026-11-18): genuine 6-21 votes after 18-24 s, accidental
+# at most 3 over whole 4-5 minute passages (30-51 lookups). A hash counts once per cluster.
+COHERENT_VOTES = 6
+COHERENT_LOOKUPS = 2  # from at least this many lookups (a single window is judged above)
+COHERENCE_BIN_SECONDS = 0.05
+COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 
 # Keep the references of at most this many plays per track (the current one included), so a
 # 5-minute track keeps as many plays as a 3-minute one (a reference cap of 60 left long tracks
@@ -159,7 +162,7 @@ class Decision(StrEnum):
 
     ACCEPT_STRONG = "accepted (strong)"
     ACCEPT_CONFIRMED = "accepted (confirmed)"
-    ACCEPT_ACCUMULATED = "accepted (accumulated)"
+    ACCEPT_COHERENT = "accepted (time-consistent)"
     PENDING = "pending confirmation"
     REJECT = "rejected"
 
@@ -169,47 +172,39 @@ class Decision(StrEnum):
         return self in (
             Decision.ACCEPT_STRONG,
             Decision.ACCEPT_CONFIRMED,
-            Decision.ACCEPT_ACCUMULATED,
+            Decision.ACCEPT_COHERENT,
         )
 
 
 @dataclass
 class MatchConfirmer:
     """
-    Decide whether local candidates identify a track.
+    Judge the best single window of each lookup.
 
-    Three ways to accept: one strong window; the same track credible on consecutive lookups;
-    or weak-but-genuine windows of the same track adding up over the last few lookups.
+    Two ways to accept: one strong window, or the same track credible on consecutive lookups.
+    Evidence spread over many lookups is judged by TimelineEvidence.
     """
 
     pending_track_id: int | None = None
     pending_count: int = 0
-    # (track_id, votes) of recent lookups whose best candidate counts as evidence, None otherwise
-    history: deque[tuple[int, int] | None] = field(
-        default_factory=lambda: deque(maxlen=ACCUMULATION_LOOKUPS)
-    )
+    # (track_id, votes) of the latest lookup's best candidate, None after a miss
+    latest: tuple[int, int] | None = None
 
     def reset(self) -> None:
         """Forget everything (after an identification)."""
         self.pending_track_id = None
         self.pending_count = 0
-        self.history.clear()
+        self.latest = None
 
     def record_miss(self) -> None:
         """Register a lookup without any candidate: it breaks a consecutive run."""
         self.pending_track_id = None
         self.pending_count = 0
-        self.history.append(None)
-
-    def accumulated(self, track_id: int) -> tuple[int, int]:
-        """Return (votes, windows) of the recent evidence for a track."""
-        votes = [v for entry in self.history if entry and entry[0] == track_id for v in entry[1:]]
-        return sum(votes), len(votes)
+        self.latest = None
 
     def consider(self, candidate: QueryMatch) -> Decision:
         """Judge one candidate."""
-        counts = candidate.best_votes >= ACCUMULATION_MIN_VOTES and candidate.ratio >= CONFIRM_RATIO
-        self.history.append((candidate.track_id, candidate.best_votes) if counts else None)
+        self.latest = (candidate.track_id, candidate.best_votes)
         if candidate.best_votes >= STRONG_VOTES and candidate.ratio >= STRONG_RATIO:
             self.reset()
             return Decision.ACCEPT_STRONG
@@ -222,16 +217,84 @@ class MatchConfirmer:
             if self.pending_count >= CONFIRMATIONS_REQUIRED:
                 self.reset()
                 return Decision.ACCEPT_CONFIRMED
-        else:
-            self.pending_track_id = None
-            self.pending_count = 0
-        if counts:
-            votes, windows = self.accumulated(candidate.track_id)
-            if votes >= ACCUMULATED_VOTES and windows >= ACCUMULATED_WINDOWS:
-                self.reset()
-                return Decision.ACCEPT_ACCUMULATED
             return Decision.PENDING
+        self.pending_track_id = None
+        self.pending_count = 0
         return Decision.REJECT
+
+
+@dataclass(frozen=True)
+class Coherence:
+    """The strongest time-consistent cluster of evidence in a passage."""
+
+    track_id: int
+    reference_passage_id: str
+    votes: int  # distinct hashes at (about) one time shift
+    lookups: int  # lookups that contributed to them
+    latest_votes: int  # of which found by the newest lookup
+    shift_seconds: float  # reference passage time minus this passage's time
+
+
+class TimelineEvidence:
+    """
+    Add the shared hashes of every lookup of a passage up by (track, reference passage, shift).
+
+    The shift of one shared hash is its time in the reference passage (window offset + stored
+    position) minus its time in this passage (window start + query position). A real replay of
+    the same audio keeps one shift; accidental collisions scatter.
+    """
+
+    def __init__(self, frame_seconds: float = PANAKO_FRAME_SECONDS) -> None:
+        """Start empty; frame_seconds is the duration of one fingerprint position step."""
+        self.frame_seconds = frame_seconds
+        self.lookups = 0
+        # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there
+        self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
+
+    def add(self, query: Fingerprints, rows: list[MatchRow], query_start_seconds: float) -> None:
+        """Add one lookup: its query hashes and the stored rows sharing them."""
+        self.lookups += 1
+        for row in rows:
+            for query_position in query.get(row.fingerprint_hash, ()):
+                shift = (
+                    row.passage_offset_seconds
+                    + (row.position - query_position) * self.frame_seconds
+                    - query_start_seconds
+                )
+                bins = self._bins.setdefault((row.track_id, row.passage_id), {})
+                seen = bins.setdefault(round(shift / COHERENCE_BIN_SECONDS), {})
+                seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
+
+    def best(self, track_id: int | None = None) -> Coherence | None:
+        """Return the strongest cluster (of one track if given), or None."""
+        best: Coherence | None = None
+        for (track, passage_id), bins in sorted(self._bins.items()):
+            if track_id is not None and track != track_id:
+                continue
+            for center in sorted(bins):
+                hashes: dict[str, set[int]] = {}
+                for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
+                    for fp_hash, seen in bins.get(index, {}).items():
+                        hashes.setdefault(fp_hash, set()).update(seen)
+                lookups = set().union(*hashes.values())
+                candidate = Coherence(
+                    track,
+                    passage_id,
+                    len(hashes),
+                    len(lookups),
+                    sum(1 for seen in hashes.values() if self.lookups in seen),
+                    center * COHERENCE_BIN_SECONDS,
+                )
+                if best is None or (candidate.votes, candidate.lookups) > (
+                    best.votes,
+                    best.lookups,
+                ):
+                    best = candidate
+        return best
+
+    def clear(self) -> None:
+        """Drop all evidence (after an identification)."""
+        self._bins.clear()
 
 
 @dataclass(eq=False)
@@ -252,6 +315,7 @@ class Passage:
     audd_postponed: int = 0
     next_audd_at: float = float(AUDD_FIRST_ATTEMPT_SECONDS)
     early_windows: list[tuple[float, Fingerprints]] = field(default_factory=list)
+    evidence: TimelineEvidence = field(default_factory=TimelineEvidence)
 
     @property
     def short_id(self) -> str:
@@ -311,6 +375,7 @@ class RecognitionEngine:
         audd_speed_percent: float = 0.0,
         postpone_audd: bool = True,
         fast_start_seconds: float = 0.0,
+        frame_seconds: float = PANAKO_FRAME_SECONDS,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -322,6 +387,7 @@ class RecognitionEngine:
         self.audd_speed_percent = audd_speed_percent
         self.postpone_audd = postpone_audd
         self.fast_start_seconds = fast_start_seconds
+        self.frame_seconds = frame_seconds
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
@@ -369,7 +435,9 @@ class RecognitionEngine:
     # ---------------------------------------------------------------- passages
 
     def _open_passage(self, reason: str) -> None:
-        self.passage = Passage(window_bytes=self.window_bytes)
+        self.passage = Passage(
+            window_bytes=self.window_bytes, evidence=TimelineEvidence(self.frame_seconds)
+        )
         self.logger.info(
             "Passage %s started (%s); first lookup after %ds of fresh audio",
             self.passage.short_id,
@@ -428,10 +496,11 @@ class RecognitionEngine:
                 return
             if len(passage.early_windows) < MAX_EARLY_WINDOWS:
                 passage.early_windows.append((window_end, query))
-            local = await self._run_blocking(self._db.find_best_match, query, passage.id)
+            local = await self._run_blocking(self._db.lookup, query, passage.id)
             if not self._is_current(passage):
                 return
-            if self._judge_local(passage, local):
+            passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
+            if await self._judge_local(passage, local):
                 await self._store_early_windows(passage)
                 return
             if not self._postpone_audd(passage):
@@ -465,41 +534,65 @@ class RecognitionEngine:
             passage.early_windows.append((window_end, query))
         await self._store_early_windows(passage)
 
-    def _judge_local(
-        self, passage: Passage, local: tuple[QueryMatch, dict[str, Any]] | None
-    ) -> bool:
-        """Apply the confirmation rules; return True if the passage got identified."""
-        if local is None:
+    async def _judge_local(self, passage: Passage, local: LocalLookup) -> bool:
+        """Apply the acceptance rules; return True if the passage got identified."""
+        candidate, metadata = local.best, local.metadata
+        decision = Decision.REJECT
+        if candidate is None or metadata is None:
             passage.confirmer.record_miss()
             self.logger.debug("LOCAL MISS: no candidate (passage %s)", passage.short_id)
-            return False
-        candidate, metadata = local
-        evidence_before, _ = passage.confirmer.accumulated(candidate.track_id)
-        decision = passage.confirmer.consider(candidate)
-        if decision.accepted:  # the confirmer resets its history on acceptance
-            evidence = evidence_before + candidate.best_votes
         else:
-            evidence, _ = passage.confirmer.accumulated(candidate.track_id)
+            decision = passage.confirmer.consider(candidate)
+            coherence = passage.evidence.best(candidate.track_id)
+            self.logger.info(
+                "LOCAL %s: %s votes=%d acc=%d ratio=%.3f shared=%d ref=%d offset=%+d "
+                "ref_passage=%s at=%.0fs -> %s (passage %s)",
+                "HIT" if decision.accepted else "CANDIDATE",
+                describe(metadata),
+                candidate.best_votes,
+                coherence.votes if coherence else 0,
+                candidate.ratio,
+                candidate.shared_hashes,
+                candidate.reference_id,
+                candidate.best_offset,
+                candidate.reference_passage_id[:8],
+                passage.seconds,
+                decision.value,
+                passage.short_id,
+            )
+            if decision.accepted:
+                self._identify(passage, candidate.track_id, metadata, via="local")
+                return True
+        return await self._judge_timeline(passage)
+
+    async def _judge_timeline(self, passage: Passage) -> bool:
+        """Accept the strongest time-consistent cluster once it has enough evidence."""
+        coherence = passage.evidence.best()
+        if (
+            coherence is None
+            or coherence.votes < COHERENT_VOTES
+            or coherence.lookups < COHERENT_LOOKUPS
+        ):
+            return False
+        metadata = await self._run_blocking(self._db.track_metadata, coherence.track_id)
+        if metadata is None or not self._is_current(passage):
+            return False
+        passage.confirmer.reset()
         self.logger.info(
-            "LOCAL %s: %s votes=%d acc=%d ratio=%.3f shared=%d ref=%d offset=%+d "
+            "LOCAL HIT: %s votes=%d acc=%d ratio=1.000 lookups=%d shift=%+.2fs "
             "ref_passage=%s at=%.0fs -> %s (passage %s)",
-            "HIT" if decision.accepted else "CANDIDATE",
             describe(metadata),
-            candidate.best_votes,
-            evidence,
-            candidate.ratio,
-            candidate.shared_hashes,
-            candidate.reference_id,
-            candidate.best_offset,
-            candidate.reference_passage_id[:8],
+            coherence.latest_votes,
+            coherence.votes,
+            coherence.lookups,
+            coherence.shift_seconds,
+            coherence.reference_passage_id[:8],
             passage.seconds,
-            decision.value,
+            Decision.ACCEPT_COHERENT.value,
             passage.short_id,
         )
-        if decision.accepted:
-            self._identify(passage, candidate.track_id, metadata, via="local")
-            return True
-        return False
+        self._identify(passage, coherence.track_id, metadata, via="local")
+        return True
 
     def _divisor(self, window_end: float) -> int:
         """Fingerprint density for a window: denser at the start of a passage when enabled."""
@@ -513,14 +606,14 @@ class RecognitionEngine:
             return False
         if passage.audd_postponed >= MAX_AUDD_POSTPONES:
             return False
-        history = passage.confirmer.history
-        latest = history[-1] if history else None
+        latest = passage.confirmer.latest
         if latest is None or latest[1] < POSTPONE_MIN_VOTES:
             return False  # no promising candidate
         if self._audd_wait_reason(passage) is not None:
             return False  # AudD isn't due anyway
         passage.audd_postponed += 1
-        votes, _ = passage.confirmer.accumulated(latest[0])
+        coherence = passage.evidence.best(latest[0])
+        votes = coherence.votes if coherence else latest[1]
         self.logger.info(
             "AudD postponed (%d/%d): local candidate track %d has %d votes so far (passage %s)",
             passage.audd_postponed,
@@ -645,6 +738,7 @@ class RecognitionEngine:
         passage.track_id = track_id
         passage.metadata = metadata
         passage.confirmer.reset()
+        passage.evidence.clear()  # not needed once identified
         passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
         if self._publish(metadata):
             self.logger.info("Reported stream metadata: %s", describe(metadata))
