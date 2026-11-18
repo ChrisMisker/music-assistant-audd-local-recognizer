@@ -1758,6 +1758,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "soundfile" },
 ]
 server = [
     { name = "aiosendspin", extra = ["server"] },
@@ -1781,6 +1782,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-timeout", specifier = "==2.4.0" },
     { name = "ruff", specifier = "==0.16.5" },
+    { name = "soundfile", specifier = ">=0.14.0" },
 ]
 server = [
     { name = "aiosendspin", extras = ["server"], specifier = "==10.3.0" },

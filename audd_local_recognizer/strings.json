@@ -34,7 +34,11 @@
     },
     "record_input_stream": {
       "label": "Record the input stream for debugging",
-      "description": "Record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute) in the provider's data folder (recordings/), up to 60 minutes in total; then it stops by itself. Only for troubleshooting; the files stay on this server and are included in Home Assistant backups, so remove them afterwards."
+      "description": "Record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute), with the recognizer's log of each session, in the provider's data folder (recordings/), up to the maximum below; then it stops by itself. Only for troubleshooting; the files stay on this server and are included in Home Assistant backups, so remove them afterwards."
+    },
+    "record_input_max_minutes": {
+      "label": "Maximum recording (minutes)",
+      "description": "Total length of all input recordings kept on this server (about 10 MB per minute). When it is reached, recording stops until recordings are removed."
     },
     "audd_speed_correction_percent": {
       "label": "Speed correction for AudD (%)",

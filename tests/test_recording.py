@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import wave
+from logging.handlers import QueueHandler
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,6 +14,7 @@ import pytest
 from audd_local_recognizer.fingerprints import PcmFormat
 from audd_local_recognizer.recording import (
     InputRecorder,
+    SessionLog,
     pcm_to_s16_interleaved,
     recorded_seconds,
 )
@@ -88,3 +92,22 @@ def test_nothing_is_written_before_the_first_flush(tmp_path: Path) -> None:
     recorder.add(_seconds_of_f32(2))
     assert recorder.buffered_seconds == pytest.approx(2.0)
     assert not (tmp_path / "rec").exists()
+
+
+def test_session_log_copies_info_lines_in_the_ma_format(tmp_path: Path) -> None:
+    logger = logging.getLogger("test.session_log")
+    logger.setLevel(logging.DEBUG)
+    path = tmp_path / "20261118-121907.log"
+    session_log = SessionLog(logger, path)
+    logger.debug("not copied")
+    logger.info("Passage %s started (stream started)", "abcdef12")
+    session_log.close()
+    logger.info("after close: not copied")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert re.match(
+        r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} INFO \(\w+\) \[test\.session_log\] "
+        r"Passage abcdef12 started \(stream started\)$",
+        lines[0],
+    )
+    assert not any(isinstance(h, QueueHandler) for h in logger.handlers)

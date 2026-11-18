@@ -24,7 +24,7 @@ from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
-from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder
+from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder, SessionLog
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -52,6 +52,8 @@ CONF_FAST_START = "fast_start"
 FAST_START_SECONDS = 30.0
 MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
+CONF_RECORD_MINUTES = "record_input_max_minutes"
+MAX_RECORDING_MINUTES = 600
 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
@@ -77,6 +79,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._engines: dict[str, RecognitionEngine] = {}
         self._recorders: dict[str, tuple[InputRecorder, asyncio.Lock]] = {}
+        self._session_logs: dict[str, SessionLog] = {}
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -234,10 +237,23 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 label="Record the input stream for debugging",
                 description=(
                     "Record the live input exactly as the recognizer receives it (WAV, about "
-                    "10 MB per minute) in the provider's data folder (recordings/), up to 60 "
-                    "minutes in total; then it stops by itself. Only for troubleshooting; the "
-                    "files stay on this server and are included in Home Assistant backups, so "
-                    "remove them afterwards."
+                    "10 MB per minute), with the recognizer's log of each session, in the "
+                    "provider's data folder (recordings/), up to the maximum below; then it stops "
+                    "by itself. Only for troubleshooting; the files stay on this server and are "
+                    "included in Home Assistant backups, so remove them afterwards."
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_RECORD_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=MAX_RECORDING_SECONDS // 60,
+                range=(10, MAX_RECORDING_MINUTES),
+                required=False,
+                advanced=True,
+                label="Maximum recording (minutes)",
+                description=(
+                    "Total length of all input recordings kept on this server (about 10 MB per "
+                    "minute). When it is reached, recording stops until recordings are removed."
                 ),
             ),
         )
@@ -281,6 +297,16 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         except ValueError:
             return 0.0
         return max(-MAX_SPEED_CORRECTION, min(MAX_SPEED_CORRECTION, percent))
+
+    def _recording_seconds(self) -> float:
+        value = self.config.get_value(CONF_RECORD_MINUTES)
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return float(MAX_RECORDING_SECONDS)
+        try:
+            minutes = float(value)
+        except ValueError:
+            return float(MAX_RECORDING_SECONDS)
+        return max(1.0, min(MAX_RECORDING_MINUTES, minutes)) * 60
 
     def _fast_start(self) -> bool:
         value = self.config.get_value(CONF_FAST_START)
@@ -375,25 +401,37 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def _start_recording(self, session_id: str, fmt: PcmFormat) -> None:
         folder = self._storage_dir() / RECORDINGS_SUBDIR
-        recorder = await asyncio.to_thread(InputRecorder, folder, fmt)
+        max_seconds = self._recording_seconds()
+        recorder = await asyncio.to_thread(
+            lambda: InputRecorder(folder, fmt, max_seconds=max_seconds)
+        )
         if recorder.budget <= 0:
             self.logger.warning(
                 "Input recording is on, but %s already holds the maximum of %d minutes: "
                 "remove the recordings (scripts/fetch-recordings.sh --delete) to record again",
                 folder,
-                MAX_RECORDING_SECONDS // 60,
+                max_seconds // 60,
             )
             return
         # the database as it is when the recording starts: replaying against a later copy would
         # include what was learned (and pruned) during this very recording
         await asyncio.to_thread(self._db.backup_to, folder / f"{recorder.started}_db.sqlite3")
         self._recorders[session_id] = (recorder, asyncio.Lock())
+        log_path = folder / f"{recorder.started}.log"
+        self._session_logs[session_id] = await asyncio.to_thread(SessionLog, self.logger, log_path)
         self.logger.info(
-            "Recording the input of session %s to %s (%.0f of %d minutes left)",
+            "Recording the input of session %s to %s (%.0f of %d minutes left); provider v%s, "
+            "source %dHz/%dch/%s, speed correction %+.1f%%, fast start %s",
             session_id,
             folder,
             recorder.budget / 60,
-            MAX_RECORDING_SECONDS // 60,
+            max_seconds // 60,
+            VERSION,
+            fmt.sample_rate,
+            fmt.channels,
+            fmt.content_type,
+            self._speed_correction(),
+            "on" if self._fast_start() else "off",
         )
 
     async def _record(self, session_id: str, pcm_chunk: bytes) -> None:
@@ -409,16 +447,17 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self._recorders.pop(session_id, None)
             self.logger.info(
                 "Input recording stopped: the maximum of %d minutes is reached",
-                MAX_RECORDING_SECONDS // 60,
+                recorder.max_seconds // 60,
             )
 
     async def _stop_recording(self, session_id: str) -> None:
-        if (entry := self._recorders.pop(session_id, None)) is None:
-            return
-        recorder, lock = entry
-        async with lock:
-            await asyncio.to_thread(recorder.flush)
-            await asyncio.to_thread(recorder.close)
+        if (entry := self._recorders.pop(session_id, None)) is not None:
+            recorder, lock = entry
+            async with lock:
+                await asyncio.to_thread(recorder.flush)
+                await asyncio.to_thread(recorder.close)
+        if (session_log := self._session_logs.pop(session_id, None)) is not None:
+            await asyncio.to_thread(session_log.close)
 
     async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
         await asyncio.to_thread(write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info)
@@ -448,6 +487,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def unload(self, is_removed: bool = False) -> None:  # noqa: FBT001, FBT002 - MA API
         """Unload; when the user removes the provider, also delete its fingerprint database."""
+        for session_id in list(self._recorders) + list(self._session_logs):
+            await self._stop_recording(session_id)
         await super().unload(is_removed)
         if is_removed:
             storage_dir = self._storage_dir()

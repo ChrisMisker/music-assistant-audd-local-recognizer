@@ -23,6 +23,7 @@ dev = [
   "pytest-asyncio>=0.24",
   "pytest-timeout==2.4.0",
   "ruff==0.16.5",
+  "soundfile>=0.14.0",
 ]
 # Only for CI (`uv sync --all-groups`): a real Music Assistant server, as in the community provider
 # template. The server version this provider is developed against: a commit after the @ (must

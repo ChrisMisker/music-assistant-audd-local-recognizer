@@ -10,8 +10,11 @@ across sessions and restarts. Files can be replayed offline through the recogniz
 
 from __future__ import annotations
 
+import logging
+import queue
 import time
 import wave
+from logging.handlers import QueueHandler, QueueListener
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -21,9 +24,12 @@ if TYPE_CHECKING:
 
     from .fingerprints import PcmFormat
 
-MAX_RECORDING_SECONDS = 3600  # one LP, both sides
+MAX_RECORDING_SECONDS = 3600  # default: one LP, both sides (a setting can raise it)
 SEGMENT_SECONDS = 300
 FLUSH_SECONDS = 10  # write to disk in blocks of this many seconds
+# The same line format as the Music Assistant log, so the report and replay scripts read both.
+LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def pcm_to_s16_interleaved(pcm: bytes, fmt: PcmFormat) -> bytes:
@@ -137,3 +143,31 @@ class InputRecorder:
         writer.setframerate(self.fmt.sample_rate)
         self.writer = writer
         self.segment_written = 0.0
+
+
+class SessionLog:
+    """
+    Copy the provider's INFO log lines to a text file next to a recording.
+
+    The recording then carries its own ground truth (what was identified when), even after the
+    Music Assistant container is recreated and its log is gone. The file is written by a
+    background thread, never on the event loop. Call close() off the event loop.
+    """
+
+    def __init__(self, logger: logging.Logger, path: Path) -> None:
+        """Start copying the logger's records to path (opened on the first record)."""
+        self._logger = logger
+        self._file = logging.FileHandler(path, encoding="utf-8", delay=True)
+        self._file.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        records: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+        self._handler = QueueHandler(records)
+        self._handler.setLevel(logging.INFO)
+        self._listener = QueueListener(records, self._file)
+        self._listener.start()
+        logger.addHandler(self._handler)
+
+    def close(self) -> None:
+        """Stop copying, write what is pending and close the file (blocking)."""
+        self._logger.removeHandler(self._handler)
+        self._listener.stop()
+        self._file.close()

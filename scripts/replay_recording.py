@@ -1,16 +1,18 @@
 """
 Replay recorded input offline through the recognizer, without AudD and without the turntable.
 
-    uv run python scripts/replay_recording.py debug-recordings/<timestamp> [--report]
+    uv run python scripts/replay_recording.py debug-recordings/<timestamp> [--report] [--oracle]
 
 Uses the real Panako fingerprints and a *temporary copy* of the database snapshot in that
 folder (the snapshot itself is never changed). AudD is never called. Without --oracle this
 measures local recognition only: tracks that are not in the database stay unidentified.
-With --oracle MA_LOG, a "perfect AudD" answers every AudD attempt with the track that really
-played at that moment, taken from the live Music Assistant log of the recording session (the
-"Identified ..." lines). The replay then learns a first play just like live, and a second play
-shows how many AudD calls local recognition still leaves (ideally none). Every segment group
-(one recording session) is fed as one continuous stream, in 1-second chunks, waiting for each
+With --oracle, a "perfect AudD" answers every AudD attempt with the track that really played at
+that moment, taken from each session's own log next to its recording (`<start>.log`, written by
+the provider since 0.9; or --oracle MA_LOG for an exported Music Assistant log). It also answers
+with a timecode (the time since that passage started) and the track length when the log has one
+(`Expected end of ... duration Ns`), so the gapless guard works offline too. The replay then learns a first play just like live, and a second play
+shows how many AudD calls local recognition still leaves (ideally none). Segments may be WAV or FLAC
+(`scripts/fetch-recordings.sh` stores FLAC). Every segment group (one recording session) is fed as one continuous stream, in 1-second chunks, waiting for each
 lookup to finish (ideal timing). Log lines use the recording's own clock, in the same format as
 Music Assistant, so `--report` (or piping into scripts/vote_report.py) gives the usual report.
 """
@@ -26,6 +28,7 @@ import sys
 import tempfile
 import time
 import wave
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
@@ -36,6 +39,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audd_local_recognizer.database import FingerprintDatabase
 from audd_local_recognizer.engine import GapSettings, RecognitionEngine
 from audd_local_recognizer.fingerprints import PcmFormat, fingerprint_window
+
+SEGMENT_SUFFIXES = (".wav", ".flac")
+
+
+def _segment_format(path: Path) -> tuple[int, int]:
+    """Return (sample rate, channels) of a WAV or FLAC segment."""
+    if path.suffix == ".flac":
+        import soundfile  # noqa: PLC0415 - dev dependency, only needed for FLAC
+
+        info = soundfile.info(str(path))
+        return int(info.samplerate), int(info.channels)
+    with wave.open(str(path), "rb") as reader:
+        return reader.getframerate(), reader.getnchannels()
+
+
+def _segment_chunks(path: Path, frames: int) -> Iterator[bytes]:
+    """Yield interleaved s16le chunks of `frames` frames from a WAV or FLAC segment."""
+    if path.suffix == ".flac":
+        import soundfile  # noqa: PLC0415
+
+        with soundfile.SoundFile(str(path)) as reader:
+            while len(block := reader.read(frames, dtype="int16", always_2d=True)):
+                yield block.astype("<i2").tobytes()
+        return
+    with wave.open(str(path), "rb") as reader:
+        while chunk := reader.readframes(frames):
+            yield chunk
 
 
 class _RecordingClock(logging.Formatter):
@@ -61,6 +91,7 @@ class Oracle:
         starts: dict[str, datetime] = {}
         ends: dict[str, datetime] = {}
         titles: dict[str, str] = {}
+        self.durations: dict[str, float] = {}
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
             if not (stamp := _LOG_TIME.match(line)):
                 continue
@@ -71,6 +102,8 @@ class Oracle:
                 ends[closed.group(1)] = when
             elif found := re.search(r"Identified (.+?) via \w+ after \d+s \(passage (\w{8})", line):
                 titles[found.group(2)] = found.group(1)
+            elif length := re.search(r"Expected end of (.+?) at .*, duration (\d+)s\)", line):
+                self.durations[length.group(1)] = float(length.group(2))
         ordered = sorted(starts.items(), key=lambda item: item[1])
         next_start = {
             passage: ordered[i + 1][1] if i + 1 < len(ordered) else start + timedelta(hours=1)
@@ -84,11 +117,27 @@ class Oracle:
 
     def track_at(self, when: datetime) -> str | None:
         """Return "Artist - Title" playing at that moment (a few seconds of slack)."""
+        found = self.span_at(when)
+        return found[1] if found else None
+
+    def span_at(self, when: datetime) -> tuple[datetime, str] | None:
+        """Return (passage start, "Artist - Title") playing at that moment, or None."""
         slack = timedelta(seconds=5)
         for start, end, title in reversed(self.spans):  # the most recent passage wins
             if start - slack <= when <= end + slack:
-                return title
+                return start, title
         return None
+
+    def answer(self, when: datetime) -> dict[str, Any] | None:
+        """Return AudD-like metadata for that moment: track, timecode and (if known) length."""
+        if (found := self.span_at(when)) is None:
+            return None
+        start, label = found
+        metadata = _metadata(label)
+        position = max(0, int((when - start).total_seconds()))
+        metadata["audd_timecode"] = f"{position // 60:02d}:{position % 60:02d}"
+        metadata["duration_seconds"] = self.durations.get(label)
+        return metadata
 
 
 def _metadata(label: str) -> dict[str, Any]:
@@ -104,8 +153,8 @@ async def _replay(
     options: dict[str, Any],
 ) -> None:
     logger = logging.getLogger("music_assistant.Audio Recognizer: AudD + Local Fingerprints")
-    with wave.open(str(files[0]), "rb") as first:
-        fmt = PcmFormat(first.getframerate(), first.getnchannels(), 2, "s16le")
+    rate, channels = _segment_format(files[0])
+    fmt = PcmFormat(rate, channels, 2, "s16le")
     start = datetime.strptime(files[0].name[:15], "%Y%m%d-%H%M%S")  # noqa: DTZ007
     clock.now = start
 
@@ -114,8 +163,7 @@ async def _replay(
 
     async def perfect_audd(_wav: bytes) -> dict[str, Any] | None:
         assert oracle is not None
-        label = oracle.track_at(clock.now)
-        return _metadata(label) if label else None
+        return oracle.answer(clock.now)
 
     loop = asyncio.get_running_loop()
     engine = RecognitionEngine(
@@ -131,13 +179,12 @@ async def _replay(
     )
     fed = 0
     for path in files:
-        with wave.open(str(path), "rb") as reader:
-            while chunk := reader.readframes(fmt.sample_rate):
-                engine.feed(chunk)
-                fed += 1
-                clock.now = start + timedelta(seconds=fed)
-                if engine.task is not None and not engine.task.done():
-                    await engine.task
+        for chunk in _segment_chunks(path, fmt.sample_rate):
+            engine.feed(chunk)
+            fed += 1
+            clock.now = start + timedelta(seconds=fed)
+            if engine.task is not None and not engine.task.done():
+                await engine.task
     engine.close()
 
 
@@ -148,9 +195,11 @@ def main() -> None:
     parser.add_argument("--report", action="store_true", help="print the vote report")
     parser.add_argument(
         "--oracle",
-        type=Path,
+        nargs="?",
+        const="session",
         metavar="MA_LOG",
-        help="answer AudD attempts with the track that really played, from this live MA log",
+        help="answer AudD attempts with the track that really played: from each session's own "
+        "log (<start>.log next to the recording) when given without a value, else from MA_LOG",
     )
     parser.add_argument(
         "--postpone-audd", action="store_true", help="engine option: postpone AudD for candidates"
@@ -170,7 +219,9 @@ def main() -> None:
         "replay recognize itself)",
     )
     args = parser.parse_args()
-    files = sorted(args.folder.glob("*_[0-9][0-9].wav"))
+    files = sorted(
+        path for path in args.folder.glob("*_[0-9][0-9].*") if path.suffix in SEGMENT_SUFFIXES
+    )
     snapshot = args.folder / "fingerprints.sqlite3"
     if not files:
         sys.exit(f"no recordings in {args.folder}")
@@ -181,6 +232,7 @@ def main() -> None:
     began = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
         for started, group in groupby(files, key=lambda p: p.name[:15]):
+            group_files = list(group)
             db_path = Path(tmp) / f"{started}.sqlite3"
             at_start = args.folder / f"{started}_db.sqlite3"
             if at_start.exists():  # the database as it was when this recording started
@@ -192,15 +244,15 @@ def main() -> None:
             elif snapshot.exists():
                 shutil.copyfile(snapshot, db_path)
                 if not args.keep_later_references:
-                    removed = _drop_references_since(db_path, args.folder / f"{started}_01.wav")
+                    removed = _drop_references_since(db_path, next(iter(group_files)))
                     print(
                         f"{started}: later snapshot; removed {removed} references learned during "
                         "the recording (older plays may already have been pruned)",
                         file=sys.stderr,
                     )
-            oracle = Oracle(args.oracle) if args.oracle else None
+            oracle = _oracle(args.oracle, args.folder, started)
             options = {"postpone_audd": args.postpone_audd, "fast_start_seconds": args.fast_start}
-            asyncio.run(_replay(list(group), FingerprintDatabase(db_path), clock, oracle, options))
+            asyncio.run(_replay(group_files, FingerprintDatabase(db_path), clock, oracle, options))
     lines = stream.lines
     print(f"Replayed {len(files)} segments in {time.monotonic() - began:.0f}s", file=sys.stderr)
     if args.report:
@@ -209,6 +261,19 @@ def main() -> None:
         print(report(*parse(lines)))
     else:
         print("".join(lines), end="")
+
+
+def _oracle(option: str | None, folder: Path, started: str) -> Oracle | None:
+    """Return the oracle for one session: none, its own log, or the given MA log."""
+    if option is None:
+        return None
+    if option != "session":
+        return Oracle(Path(option))
+    session_log = folder / f"{started}.log"
+    if not session_log.exists():
+        print(f"{started}: no session log ({session_log.name}); no oracle", file=sys.stderr)
+        return None
+    return Oracle(session_log)
 
 
 def _drop_references_since(db_path: Path, first_file: Path) -> int:
