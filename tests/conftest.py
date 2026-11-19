@@ -91,6 +91,7 @@ class Harness:
     samples: list[tuple[bytes, dict[str, Any]]] | None = None
     audd_speed_percent: float = 0.0
     fast_start_seconds: float = 0.0
+    audd_thorough: bool = False
     divisors: list[int] = field(default_factory=list)
     engine: RecognitionEngine = field(init=False)
 
@@ -109,6 +110,7 @@ class Harness:
             save_sample=self._save_sample if self.samples is not None else None,
             audd_speed_percent=self.audd_speed_percent,
             fast_start_seconds=self.fast_start_seconds,
+            audd_thorough=self.audd_thorough,
             frame_seconds=1.0,  # the fake fingerprinter's positions are seconds
         )
         return self

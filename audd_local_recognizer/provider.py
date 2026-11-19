@@ -51,6 +51,7 @@ CONF_MIN_GAP_SECONDS = "minimum_gap_seconds"
 CONF_SAVE_SAMPLES = "save_audd_samples"
 CONF_AUDD_SPEED = "audd_speed_correction_percent"
 CONF_FAST_START = "fast_start"
+CONF_AUDD_THOROUGH = "audd_thorough"
 FAST_START_SECONDS = 30.0
 MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
@@ -171,6 +172,20 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 required=False,
                 advanced=True,
                 label="Recognize all live audio sources",
+            ),
+            ConfigEntry(
+                key=CONF_AUDD_THOROUGH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+                label="Ask AudD more often (live and gapless records)",
+                description=(
+                    "While music is still unidentified, ask AudD every 30 seconds instead of "
+                    "slowing down to every 90 seconds after three tries. Helps on live and gapless "
+                    "records, where tracks run into each other, but uses more AudD requests "
+                    "(about 8 instead of 5 for a 4-minute track AudD does not know)."
+                ),
             ),
             ConfigEntry(
                 key=CONF_FAST_START,
@@ -418,6 +433,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             save_sample=self._save_sample if self.config.get_value(CONF_SAVE_SAMPLES) else None,
             audd_speed_percent=self._speed_correction(),
             fast_start_seconds=FAST_START_SECONDS if self._fast_start() else 0.0,
+            audd_thorough=bool(self.config.get_value(CONF_AUDD_THOROUGH)),
         )
         if self.config.get_value(CONF_RECORD_INPUT):
             await self._start_recording(session_id, fmt)

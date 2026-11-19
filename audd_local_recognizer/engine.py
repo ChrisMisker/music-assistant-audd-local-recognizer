@@ -79,13 +79,17 @@ MAX_EARLY_WINDOWS = 20
 
 # AudD cadence per unknown passage. The first attempt waits for 24 s of audio: in real vinyl
 # tests AudD missed the first 12 s (intro) of every track (6/6) and matched 30-42 s, while
-# local lookups still start at 12 s. Then every 30 s while the passage stays unidentified (user's
-# choice 2026-11-19: on live/gapless records one passage spans several tracks, and the old slow
-# cadence of 90 s after 3 attempts with a cap of 8 left the next tracks without a chance). The cap
-# is a safety net (20 minutes of unidentified music).
+# local lookups still start at 12 s. Then 30 s between the first attempts and 90 s after that,
+# to spare AudD requests (the point of local fingerprints). The cap is high enough (20, ~27 min)
+# that a long unidentified passage on a live or gapless record, which can hold several tracks,
+# keeps a chance every 90 s (the old cap of 8 left the next tracks without AudD, 2026-11-19).
+# "Thorough" (advanced setting, user's testing): every 30 s, cap 40.
 AUDD_FIRST_ATTEMPT_SECONDS = 24
-AUDD_RETRY_INTERVAL_SECONDS = 30
-AUDD_MAX_ATTEMPTS_PER_PASSAGE = 40
+AUDD_FAST_ATTEMPTS = 3
+AUDD_FAST_INTERVAL_SECONDS = 30
+AUDD_SLOW_INTERVAL_SECONDS = 90
+AUDD_MAX_ATTEMPTS_PER_PASSAGE = 20
+AUDD_THOROUGH_MAX_ATTEMPTS = 40
 # Stream-wide: never two AudD calls closer than this, whatever the passages do.
 AUDD_MIN_INTERVAL_SECONDS = 30
 # Stream-wide exponential backoff, only for real HTTP/network/API failures.
@@ -411,6 +415,7 @@ class RecognitionEngine:
         fast_start_seconds: float = 0.0,
         frame_seconds: float = PANAKO_FRAME_SECONDS,
         lookup_phases: int = 1,
+        audd_thorough: bool = False,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -423,6 +428,7 @@ class RecognitionEngine:
         self.postpone_audd = postpone_audd
         self.fast_start_seconds = fast_start_seconds
         self.lookup_phases = max(1, lookup_phases)
+        self.audd_thorough = audd_thorough
         self.frame_seconds = frame_seconds
         self._publish = publish
         self._spawn = spawn
@@ -754,8 +760,8 @@ class RecognitionEngine:
 
     def _audd_wait_reason(self, passage: Passage) -> str | None:
         """Return why AudD may not be called now, or None if it may."""
-        if passage.audd_attempts >= AUDD_MAX_ATTEMPTS_PER_PASSAGE:
-            return f"attempt limit ({AUDD_MAX_ATTEMPTS_PER_PASSAGE}) reached for this passage"
+        if passage.audd_attempts >= self._audd_max_attempts:
+            return f"attempt limit ({self._audd_max_attempts}) reached for this passage"
         if passage.seconds < passage.next_audd_at:
             return f"next passage attempt at {passage.next_audd_at:.0f}s"
         if self.stream_seconds < self.audd_blocked_until:
@@ -782,12 +788,15 @@ class RecognitionEngine:
             self.logger.debug("AudD skipped (passage %s): %s", passage.short_id, reason)
             return None
         passage.audd_attempts += 1
-        passage.next_audd_at = passage.seconds + AUDD_RETRY_INTERVAL_SECONDS
+        fast = self.audd_thorough or passage.audd_attempts < AUDD_FAST_ATTEMPTS
+        passage.next_audd_at = passage.seconds + (
+            AUDD_FAST_INTERVAL_SECONDS if fast else AUDD_SLOW_INTERVAL_SECONDS
+        )
         self.last_audd_at = self.stream_seconds
         self.logger.info(
             "AudD attempt %d/%d on %ds sample (passage %s)",
             passage.audd_attempts,
-            AUDD_MAX_ATTEMPTS_PER_PASSAGE,
+            self._audd_max_attempts,
             SAMPLE_SECONDS,
             passage.short_id,
         )
@@ -845,6 +854,10 @@ class RecognitionEngine:
         )
         self.audd_blocked_until = self.stream_seconds + self.audd_backoff_seconds
         self.logger.warning("AudD failed: %s; backing off %ds", reason, self.audd_backoff_seconds)
+
+    @property
+    def _audd_max_attempts(self) -> int:
+        return AUDD_THOROUGH_MAX_ATTEMPTS if self.audd_thorough else AUDD_MAX_ATTEMPTS_PER_PASSAGE
 
     @property
     def _speed_factor(self) -> float:
@@ -981,7 +994,14 @@ class RecognitionEngine:
             passage.short_id,
         )
         hit = await self._try_audd(passage, pcm, window_end)
-        if hit is None or not self._is_current(passage) or passage.metadata is None:
+        if hit is None:
+            # The track is known already: retry soon, not at the slow cadence of later attempts
+            # to identify an unknown passage (the stream-wide minimum interval still applies).
+            passage.next_audd_at = min(
+                passage.next_audd_at, passage.seconds + AUDD_FAST_INTERVAL_SECONDS
+            )
+            return
+        if not self._is_current(passage) or passage.metadata is None:
             return
         passage.duration_checks_left = 0  # AudD answered: no further checks this passage
         known = {track_key(passage.metadata), *passage.metadata.get(ALIASES, [])}

@@ -47,6 +47,10 @@
     "fast_start": {
       "label": "Snellere herkenning aan het begin van bekende nummers",
       "description": "Bewaart meer fingerprints van de eerste 30 seconden van elk nummer, zodat een plaat die je opnieuw vanaf het begin speelt meestal binnen 12-18 seconden wordt herkend, zonder AudD. Gebruikt ongeveer 35 % meer schijfruimte; zet uit bij een heel grote collectie. Geldt voor nummers die vanaf nu (opnieuw) worden geleerd."
+    },
+    "audd_thorough": {
+      "label": "Vaker AudD vragen (live en gapless platen)",
+      "description": "Vraag AudD elke 30 seconden zolang muziek nog niet herkend is, in plaats van na drie pogingen terug te gaan naar elke 90 seconden. Helpt bij live en gapless platen, waar nummers in elkaar overlopen, maar kost meer AudD-verzoeken (ongeveer 8 in plaats van 5 voor een nummer van 4 minuten dat AudD niet kent)."
     }
   }
 }

@@ -28,10 +28,11 @@ wrong name (as long as AudD reports the track length, which it usually does).
   The Trouble With Me (Album Version)" are one track. Existing duplicates are merged automatically
   when the provider starts (the older track keeps its name). *(Live)*, *(Remix)* or *(Radio Edit)*
   still count as different recordings.
-- **Live and gapless records:** while a stretch of music is still unidentified, AudD is now asked
-  every 30 seconds (it used to slow down to every 90 seconds and stop after 8 tries), so on a
-  live record every next track gets its chance even when one track in between is unknown to AudD.
-  An unknown 4-minute track now costs about 8 AudD requests instead of 4–5.
+- **Live and gapless records:** a long stretch of unidentified music no longer stops asking AudD
+  after 8 tries (now 20, still one every 90 seconds after the first three), so on a live record
+  the next tracks get their chance even when one track in between is unknown to AudD. New
+  advanced setting *Ask AudD more often (live and gapless records)*: every 30 seconds instead of
+  90, at the cost of more requests.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

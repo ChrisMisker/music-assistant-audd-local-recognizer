@@ -47,6 +47,10 @@
     "fast_start": {
       "label": "Faster recognition at the start of known tracks",
       "description": "Stores more fingerprints of the first 30 seconds of every track, so a record you play again from the start is usually recognized within 12-18 seconds without asking AudD. Uses about 35 % more disk space; turn off for a very large collection. Applies to tracks learned (or played again) from now on."
+    },
+    "audd_thorough": {
+      "label": "Ask AudD more often (live and gapless records)",
+      "description": "While music is still unidentified, ask AudD every 30 seconds instead of slowing down to every 90 seconds after three tries. Helps on live and gapless records, where tracks run into each other, but uses more AudD requests (about 8 instead of 5 for a 4-minute track AudD does not know)."
     }
   }
 }

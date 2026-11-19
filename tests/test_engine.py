@@ -308,18 +308,24 @@ async def test_h_different_track_is_not_a_false_local_hit(
 async def test_audd_cadence_and_cap_for_unknown_passage(
     make_harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(eng, "AUDD_MAX_ATTEMPTS_PER_PASSAGE", 8)
+    monkeypatch.setattr(eng, "AUDD_MAX_ATTEMPTS_PER_PASSAGE", 6)
     h = make_harness(audd_known=set())
-    await h.play(9, 600)
-    # 24, 54, 84, ... (every 30 s while unidentified), capped per passage
-    assert len(h.audd_calls) == 8
+    await h.play(9, 900)
+    # 24, 54, 84 (30 s apart), then every 90 s to spare AudD requests, capped per passage
+    assert len(h.audd_calls) == 6
     window_starts = [c[0] % 1000 for c in h.audd_calls]
-    assert window_starts[:5] == [12, 42, 72, 102, 132]  # never the 0-12 s intro
+    assert window_starts == [12, 42, 72, 162, 252, 342]  # never the 0-12 s intro
 
 
-async def test_a_long_unidentified_passage_keeps_trying_every_30s(make_harness: Any) -> None:
-    """On a live record one passage can hold several tracks: each gets a chance."""
+async def test_a_long_unidentified_passage_keeps_a_chance(make_harness: Any) -> None:
+    """On a live record one passage holds several tracks: past the old cap of 8, AudD goes on."""
     h = make_harness(audd_known=set())
+    await h.play(9, 990)
+    assert len(h.audd_calls) == 13  # 24, 54, 84, 174, ... 984 s
+
+
+async def test_thorough_audd_asks_every_30s(make_harness: Any) -> None:
+    h = make_harness(audd_known=set(), audd_thorough=True)
     await h.play(9, 300)
     assert len(h.audd_calls) == 10  # 24 s … 294 s
 
