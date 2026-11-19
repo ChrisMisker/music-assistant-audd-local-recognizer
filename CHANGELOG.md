@@ -58,6 +58,16 @@ wrong name (as long as AudD reports the track length, which it usually does).
 - **Nothing good is thrown away in a correction:** when AudD first gives a part or another name
   and later the real track, what was learned under the first name is now kept for the real track
   instead of deleted, so the next play of it is recognized locally.
+- **Long tracks are learned whole:** learning used to stop after 10 minutes of a track, so the
+  second half of a long piece (e.g. an 18-minute suite) was never learned. When the provider knows
+  where the song started and how long it is, it now learns to the end (up to 30 minutes; about
+  3.5 MB for 18 minutes). Without that knowledge the 10-minute limit stays.
+- **Dropping the needle mid-track no longer erases what was learned:** the provider keeps about two
+  plays per track, but it used to count whole plays, so two short needle drops in the middle of a
+  long track could remove both full plays, including the start. It now counts per part of the
+  track: an older play is removed only when newer plays cover the same part twice.
+- **Lifting the needle is not the end of the track:** a silence long before the expected end (45
+  seconds or more) no longer counts as a measured track length.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

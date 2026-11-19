@@ -201,10 +201,73 @@ def test_prune_is_per_track(db_path: Path) -> None:
     b = db.upsert_track(OTHER)
     db.add_references(a, "pa", [(0.0, _landmarks(3))])
     db.add_references(b, "pb", [(0.0, _landmarks(3, prefix="b")), (6.0, _landmarks(3, prefix="c"))])
-    db.add_references(b, "pb2", [(0.0, _landmarks(3, prefix="d"))])
+    db.add_references(
+        b, "pb2", [(0.0, _landmarks(3, prefix="d")), (6.0, _landmarks(3, prefix="e"))]
+    )
+    db.add_references(
+        b, "now", [(0.0, _landmarks(3, prefix="f")), (6.0, _landmarks(3, prefix="g"))]
+    )
     assert db.prune_track(a, "now", max_plays=2) == 0
     assert db.prune_track(b, "now", max_plays=2) == 2  # keeps the newest other play (pb2)
-    assert db.stats().references == 2
+    assert db.stats().references == 5
+
+
+def _play(
+    db: FingerprintDatabase, track: int, play: str, song_seconds: range, start: float
+) -> None:
+    """Learn a play covering song_seconds (every 6 s) of a song that started at start."""
+    db.add_references(
+        track,
+        play,
+        [(second + start, _landmarks(2, prefix=f"{play}{second}x")) for second in song_seconds],
+    )
+    db.set_song_start(track, play, start)
+
+
+def _plays(db_path: Path) -> list[str]:
+    with sqlite3.connect(db_path) as conn:
+        return sorted(
+            r[0] for r in conn.execute("SELECT DISTINCT passage_id FROM reference_windows")
+        )
+
+
+def test_a_needle_drop_never_evicts_the_play_that_holds_the_start(db_path: Path) -> None:
+    """Regression (Foreigner Suite, 2026-11-19): two drops mid-song removed both full plays."""
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    _play(db, track, "full1", range(0, 600, 6), 0.0)
+    _play(db, track, "full2", range(0, 600, 6), 3.0)
+    _play(db, track, "drop1", range(588, 690, 6), -588.0)
+    assert db.prune_track(track, "drop1", 2, 6.0, 30) == 0
+    _play(db, track, "drop2", range(844, 1050, 6), -844.0)
+    assert db.prune_track(track, "drop2", 2, 6.0, 30) == 0
+    assert _plays(db_path) == ["drop1", "drop2", "full1", "full2"]
+    # a third full play of the same part makes the oldest full play redundant
+    _play(db, track, "full3", range(0, 600, 6), 1.0)
+    assert db.prune_track(track, "full3", 2, 6.0, 30) == 100
+    assert _plays(db_path) == ["drop1", "drop2", "full2", "full3"]
+
+
+def test_an_older_play_with_little_unique_coverage_goes(db_path: Path) -> None:
+    """A few seconds of edge difference do not keep an old play forever."""
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    _play(db, track, "old", range(0, 180, 6), 0.0)
+    _play(db, track, "middle", range(12, 180, 6), 0.0)
+    _play(db, track, "current", range(6, 186, 6), 0.0)
+    assert db.prune_track(track, "current", 2, 6.0, 30) == 30  # only 0-6 s were its own
+    assert _plays(db_path) == ["current", "middle"]
+
+
+def test_a_play_without_a_stored_start_counts_from_its_passage_start(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    for play in ("legacy1", "legacy2", "now"):
+        db.add_references(
+            track, play, [(i * 6.0, _landmarks(2, prefix=f"{play}{i}x")) for i in range(20)]
+        )
+    assert db.prune_track(track, "now", 2, 6.0, 30) == 20
+    assert _plays(db_path) == ["legacy2", "now"]
 
 
 def test_open_database_recreates_an_incompatible_file(db_path: Path) -> None:

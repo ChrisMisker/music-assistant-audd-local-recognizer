@@ -56,8 +56,11 @@ SAMPLE_SECONDS = 12
 LOCAL_INTERVAL_SECONDS = 6
 LEARN_INTERVAL_SECONDS = 6  # 12 s windows every 6 s: overlap is intentional (replay coverage)
 # Stop learning a passage after this long. Guards against learning the next track under
-# the current identity on records without audible gaps between tracks.
+# the current identity on records without audible gaps between tracks. When the song's start is
+# exact and its length known, the end guard (below) stops learning at the right moment, so a long
+# track (an 18-minute suite, 2026-11-19) is learned whole, up to MAX_LEARN_SECONDS_KNOWN_END.
 MAX_LEARN_SECONDS_PER_PASSAGE = 600
+MAX_LEARN_SECONDS_KNOWN_END = 1800
 # Gapless guard: once a passage is identified, AudD's timecode (the song position at the end of
 # the sample, 1 s resolution) or the time shift of a local match, plus the track's duration, tell
 # when the track should end in passage time. Learning stops TRACK_END_GUARD_SECONDS before that
@@ -76,6 +79,11 @@ SONG_START_TOLERANCE_SECONDS = 2
 # observed length; a digital dropout (exact zeros, -120 dBFS) does not.
 UNCERTAIN_END_GUARD_SECONDS = 20
 OBSERVED_LENGTH_TOLERANCE_SECONDS = 3.0
+# A gap long before the expected end is a lifted needle, not the end of the song (2026-11-19,
+# needle drops in Foreigner Suite noted 711 s and 435 s for an 1095 s track): a gap only gives an
+# observed length from this many seconds before the expected end on (AudD's length can be another,
+# longer edit: on a live LP 10-30 s too long).
+OBSERVED_END_WINDOW_SECONDS = 45
 DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
 # Stream dropouts: the Sendspin input sometimes delivers ~2 s of exact digital zeros in the middle
 # of a track (5x on 2026-11-19 morning). A turntable never produces exact zeros (the needle and
@@ -159,10 +167,14 @@ COHERENT_LOOKUPS = 2  # from at least this many lookups (a single window is judg
 COHERENCE_BIN_SECONDS = 0.05
 COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 
-# Keep the references of at most this many plays per track (the current one included), so a
-# 5-minute track keeps as many plays as a 3-minute one (a reference cap of 60 left long tracks
-# with a single play). Bounded by MAX_LEARN_SECONDS_PER_PASSAGE: ~1 MB per 3-minute track.
+# Keep the references of at most this many plays per part of a track (the current one included),
+# so a 5-minute track keeps as many plays as a 3-minute one (a reference cap of 60 left long tracks
+# with a single play): ~1 MB per 3-minute track. Counted per song position, not per play: an older
+# play goes only when newer plays cover all but MIN_UNIQUE_COVERAGE_SECONDS of it this many times,
+# so a needle drop mid-song never evicts the play that holds the start (2026-11-19: two drops in
+# Foreigner Suite removed both full plays).
 MAX_PLAYS_PER_TRACK = 2
+MIN_UNIQUE_COVERAGE_SECONDS = 30
 # Where in the song a local match is. A loop-based track repeats itself, so a weak match can be
 # right about the track and wrong about the position (2026-11-19, Hard Day: song start -195 s
 # instead of +2 s, which gave a false soft boundary mid-song). A passage that began after a real
@@ -624,6 +636,18 @@ class RecognitionEngine:
         ):
             # the chunk that confirmed the gap is not part of the passage
             song_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
+            if (
+                passage.track_end_at is not None
+                and song_end < passage.track_end_at - OBSERVED_END_WINDOW_SECONDS
+            ):
+                self.logger.info(
+                    "Gap %.0fs before the expected end of %s: the needle was lifted, "
+                    "not an observed length (passage %s)",
+                    passage.track_end_at - song_end,
+                    describe(passage.metadata),
+                    passage.short_id,
+                )
+                return
             self._in_background(
                 self._observe_length(passage.track_id, song_end - passage.song_start_at)
             )
@@ -682,13 +706,10 @@ class RecognitionEngine:
                     passage.track_end_at,
                 )
                 return
-            if passage.seconds > MAX_LEARN_SECONDS_PER_PASSAGE:
+            limit = self._learn_limit(passage)
+            if passage.seconds > limit:
                 passage.learning_capped = True
-                self.logger.info(
-                    "Passage %s: stopped learning after %ds",
-                    passage.short_id,
-                    MAX_LEARN_SECONDS_PER_PASSAGE,
-                )
+                self.logger.info("Passage %s: stopped learning after %ds", passage.short_id, limit)
                 return
             passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
             self.task = self._spawn(self._learn(passage, bytes(passage.pcm), passage.seconds))
@@ -1236,6 +1257,13 @@ class RecognitionEngine:
             or window_end <= passage.track_end_at - self._learn_guard(passage)
         )
 
+    @staticmethod
+    def _learn_limit(passage: Passage) -> int:
+        """Seconds of a passage to learn at most: longer when the end guard knows the end."""
+        if passage.track_end_at is not None and passage.song_start_exact:
+            return MAX_LEARN_SECONDS_KNOWN_END
+        return MAX_LEARN_SECONDS_PER_PASSAGE
+
     def _learn_guard(self, passage: Passage) -> int:
         """Seconds before the expected end at which learning stops."""
         measured = (passage.metadata or {}).get(DURATION_SOURCE) == "observed"
@@ -1401,15 +1429,20 @@ class RecognitionEngine:
             await self._prune(passage)
 
     async def _prune(self, passage: Passage) -> None:
-        """Keep the track within MAX_PLAYS_PER_TRACK plays, dropping the oldest."""
+        """Keep MAX_PLAYS_PER_TRACK plays per part of the track, dropping covered older plays."""
         if not self._is_current(passage) or passage.track_id is None:
             return
         removed = await self._run_blocking(
-            self._db.prune_track, passage.track_id, passage.id, MAX_PLAYS_PER_TRACK
+            self._db.prune_track,
+            passage.track_id,
+            passage.id,
+            MAX_PLAYS_PER_TRACK,
+            float(LEARN_INTERVAL_SECONDS),
+            MIN_UNIQUE_COVERAGE_SECONDS,
         )
         if removed:
             self.logger.info(
-                "Removed %d references of older plays of %s (keeping %d plays per track)",
+                "Removed %d references of older plays of %s (keeping %d plays per part of it)",
                 removed,
                 describe(passage.metadata),
                 MAX_PLAYS_PER_TRACK,

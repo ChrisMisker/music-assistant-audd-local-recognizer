@@ -214,7 +214,7 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
 - **Live audio sources only.** Radio streams without song info are not supported yet.
 - **The learned database can't be edited yet.** You can't view or remove individual learned
   tracks. Manual cleanup is on the roadmap. The database stays small on its own (at most about
-  two plays per track are kept), and it is deleted when you remove the provider.
+  two plays of each part of a track are kept), and it is deleted when you remove the provider.
 
 ## Questions
 

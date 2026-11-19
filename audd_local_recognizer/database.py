@@ -7,9 +7,11 @@ All methods are blocking; call them through a thread offload from async code.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import unicodedata
+from collections import Counter
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -481,26 +483,53 @@ class FingerprintDatabase:
                 metadata = None if row is None else json.loads(str(row[0]))
         return LocalLookup(best, metadata, rows)
 
-    def prune_track(self, track_id: int, keep_passage_id: str, max_plays: int) -> int:
+    def prune_track(
+        self,
+        track_id: int,
+        keep_passage_id: str,
+        max_plays: int,
+        bucket_seconds: float = 6.0,
+        min_unique_seconds: float = 0.0,
+    ) -> int:
         """
-        Keep the references of at most max_plays plays (passages) of a track.
+        Keep at most max_plays plays (passages) per part of a track; drop older covered plays.
 
-        The play being learned (keep_passage_id) always stays; of the others only the most
-        recent ones are kept, so long tracks keep as many plays as short ones. Returns the
-        number of references removed.
+        Plays are judged from the newest (the play being learned, keep_passage_id, always stays)
+        to the oldest, by the song positions their windows cover (passage offset minus the play's
+        stored song start; a play without one is assumed to have started with the song), in
+        buckets of bucket_seconds. An older play is kept while more than min_unique_seconds of it
+        is covered by fewer than max_plays newer kept plays; otherwise it goes, whole. So a needle
+        drop mid-song never evicts the play that holds the start, while repeated plays of the same
+        part still keep only the newest ones. Returns the number of references removed.
         """
         with self._transaction() as db:
-            older = [
-                passage_id
-                for (passage_id,) in db.execute(
-                    """SELECT passage_id FROM reference_windows
-                       WHERE track_id=? AND passage_id != ?
-                       GROUP BY passage_id ORDER BY MAX(id) DESC""",
-                    (track_id, keep_passage_id),
+            row = db.execute("SELECT metadata_json FROM tracks WHERE id=?", (track_id,)).fetchone()
+            starts = dict(json.loads(str(row[0])).get(SONG_STARTS) or {}) if row else {}
+            plays: dict[str, set[int]] = {}
+            newest: dict[str, int] = {}
+            for passage_id, offset, reference_id in db.execute(
+                "SELECT passage_id, passage_offset_seconds, id FROM reference_windows "
+                "WHERE track_id=?",
+                (track_id,),
+            ):
+                start = starts.get(passage_id)
+                song_start = 0.0 if not isinstance(start, int | float) else float(start)
+                plays.setdefault(passage_id, set()).add(
+                    round((float(offset) - song_start) / bucket_seconds)
                 )
-            ]
+                newest[passage_id] = max(newest.get(passage_id, 0), int(reference_id))
+            order = sorted(
+                plays, key=lambda pid: (pid != keep_passage_id, -newest[pid])
+            )  # the current play first, then the most recently learned
+            covered: Counter[int] = Counter()
+            min_unique = max(1, math.ceil(min_unique_seconds / bucket_seconds))
             removed = 0
-            for passage_id in older[max(0, max_plays - 1) :]:
+            for passage_id in order:
+                buckets = plays[passage_id]
+                unique = sum(1 for bucket in buckets if covered[bucket] < max_plays)
+                if passage_id == keep_passage_id or unique >= min(min_unique, len(buckets)):
+                    covered.update(buckets)
+                    continue
                 # landmarks go with their reference (ON DELETE CASCADE)
                 cur = db.execute(
                     "DELETE FROM reference_windows WHERE track_id=? AND passage_id=?",

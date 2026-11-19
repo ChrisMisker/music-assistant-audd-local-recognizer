@@ -398,6 +398,16 @@ async def test_learning_stops_after_cap(make_harness: Any, monkeypatch: Any) -> 
     assert len(h.references()) == 5
 
 
+async def test_a_known_end_lifts_the_learning_cap(make_harness: Any, monkeypatch: Any) -> None:
+    """A long track with an exact start and a known length is learned until its end guard."""
+    monkeypatch.setattr(eng, "MAX_LEARN_SECONDS_PER_PASSAGE", 40)
+    h = make_harness(durations={1: 100})
+    await h.play(1, 120)
+    seconds = {second for song, second in learned(h)[1]}
+    assert max(seconds) > 60  # past the 40 s cap
+    assert max(seconds) <= 95  # stops before the end guard (100 - 5 s)
+
+
 async def test_close_cancels_running_task(make_harness: Any) -> None:
     h = make_harness(fingerprint_gate=asyncio.Event())
     for second in range(12):
@@ -944,7 +954,7 @@ async def test_a_real_gap_gives_an_observed_length_but_a_dropout_does_not(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
-    h = make_harness(durations={1: 300})
+    h = make_harness(durations={1: 80})
     await h.play(1, 30)
     await h.quiet(2, level=0)  # 2 s of digital zeros mid-song: a stream dropout
     await h.play(1, 28, start=32)
@@ -952,6 +962,19 @@ async def test_a_real_gap_gives_an_observed_length_but_a_dropout_does_not(
     assert messages(caplog, "Track boundary") == []
     await h.quiet(GAP)  # quiet hiss: a real gap after 60 s of song
     assert messages(caplog, "Track 1: observed length 60s noted")
+
+
+async def test_a_lifted_needle_is_not_an_observed_length(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Foreigner Suite, 2026-11-19): a gap mid-song noted a bogus length."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 60)
+    await h.quiet(GAP)  # the needle is lifted 240 s before the end
+    assert messages(caplog, "the needle was lifted")
+    assert messages(caplog, "Track 1: observed length") == []
+    assert "observed_durations" not in (h.db.track_metadata(1) or {})
 
 
 async def test_a_long_digital_silence_is_a_gap(make_harness: Any) -> None:
