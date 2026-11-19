@@ -43,9 +43,9 @@ def music(song: int, second: int) -> bytes:
     return np.full(RATE, 1000 * song + second, dtype="<i2").tobytes()
 
 
-def silence() -> bytes:
-    """One second of digital silence."""
-    return np.zeros(RATE, dtype="<i2").tobytes()
+def silence(level: int = 0) -> bytes:
+    """One second of silence: digital zeros (a dropout) or, with a level, quiet hiss."""
+    return np.full(RATE, level, dtype="<i2").tobytes()
 
 
 def decode_codes(pcm: bytes) -> list[int]:
@@ -175,6 +175,8 @@ class Harness:
         task = self.engine.task
         if task is not None and not task.done():
             await asyncio.wait_for(task, timeout=5)
+        for background in list(self.engine.background):
+            await asyncio.wait_for(background, timeout=5)
 
     async def play(self, song: int, seconds: int, start: int = 0) -> None:
         """Feed `seconds` of a song, letting each spawned task finish."""
@@ -182,10 +184,10 @@ class Harness:
             self.engine.feed(music(song, second))
             await self.settle()
 
-    async def quiet(self, seconds: int) -> None:
-        """Feed silence."""
+    async def quiet(self, seconds: int, level: int = 0) -> None:
+        """Feed silence (digital zeros, or quiet hiss with a level such as 3 = -81 dBFS)."""
         for _ in range(seconds):
-            self.engine.feed(silence())
+            self.engine.feed(silence(level))
             await self.settle()
 
     def references(self) -> list[tuple[int, str]]:

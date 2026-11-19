@@ -18,7 +18,7 @@ from .audd_client import is_placeholder_artwork
 from .fingerprints import Fingerprints, QueryMatch, score_reference
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -93,6 +93,10 @@ _SPACES = re.compile(r"\s+")
 
 # metadata field: track keys of tracks merged into this one (see merge_tracks)
 ALIASES = "aliases"
+# metadata fields for track timing (see set_song_start, record_observed_duration)
+SONG_STARTS = "song_starts"
+OBSERVED_DURATIONS = "observed_durations"
+DURATION_SOURCE = "duration_source"
 
 
 def _normalize(text: str) -> str:
@@ -504,6 +508,83 @@ class FingerprintDatabase:
                 )
                 removed += cur.rowcount
         return removed
+
+    def _update_metadata(self, track_id: int, change: Callable[[dict[str, Any]], Any]) -> Any:
+        """Apply change(metadata) to a track's metadata JSON in one transaction; return its result."""
+        with self._transaction() as db:
+            row = db.execute("SELECT metadata_json FROM tracks WHERE id=?", (track_id,)).fetchone()
+            if row is None:
+                return None
+            metadata = json.loads(str(row[0]))
+            result = change(metadata)
+            db.execute(
+                "UPDATE tracks SET metadata_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (_dump(metadata), track_id),
+            )
+            return result
+
+    def set_song_start(self, track_id: int, passage_id: str, seconds: float) -> None:
+        """
+        Remember where the song started in a learned passage (passage seconds, may be < 0).
+
+        A local match measures time relative to the reference passage; this offset turns it into
+        the song position, also when that passage began mid-song (a soft boundary).
+        """
+        with self._transaction() as db:
+            plays = {
+                str(pid)
+                for (pid,) in db.execute(
+                    "SELECT DISTINCT passage_id FROM reference_windows WHERE track_id=?",
+                    (track_id,),
+                )
+            }
+
+        def change(metadata: dict[str, Any]) -> None:
+            starts = {
+                pid: start
+                for pid, start in dict(metadata.get(SONG_STARTS) or {}).items()
+                if pid in plays
+            }
+            starts[passage_id] = round(seconds, 1)
+            metadata[SONG_STARTS] = starts
+
+        self._update_metadata(track_id, change)
+
+    def trim_passage(
+        self, track_id: int, passage_id: str, end_seconds: float, window_seconds: float
+    ) -> int:
+        """Delete a play's reference windows that reach past end_seconds; return how many."""
+        with self._transaction() as db:
+            cur = db.execute(
+                "DELETE FROM reference_windows WHERE track_id=? AND passage_id=? "
+                "AND passage_offset_seconds + ? > ?",
+                (track_id, passage_id, window_seconds, end_seconds + 0.5),
+            )
+            return int(cur.rowcount)
+
+    def record_observed_duration(
+        self, track_id: int, seconds: float, tolerance: float
+    ) -> float | None:
+        """
+        Add an observed track length; adopt it once two recent observations agree.
+
+        Returns the adopted duration (stored as duration_seconds, source "observed") or None.
+        AudD's length is often another edit (a live recording, a single), so a length measured
+        on this very record wins once it has been seen twice.
+        """
+
+        def change(metadata: dict[str, Any]) -> float | None:
+            observed = [*list(metadata.get(OBSERVED_DURATIONS) or [])[-3:], round(seconds, 1)]
+            metadata[OBSERVED_DURATIONS] = observed
+            if len(observed) < 2 or abs(observed[-1] - observed[-2]) > tolerance:
+                return None
+            adopted = round((float(observed[-1]) + float(observed[-2])) / 2, 1)
+            metadata["duration_seconds"] = adopted
+            metadata[DURATION_SOURCE] = "observed"
+            return adopted
+
+        result = self._update_metadata(track_id, change)
+        return float(result) if result is not None else None
 
     def backup_to(self, target: Path) -> None:
         """Write a consistent copy of the database to target (safe while it is in use)."""

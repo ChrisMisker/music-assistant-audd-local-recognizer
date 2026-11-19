@@ -896,3 +896,65 @@ async def test_a_missed_length_request_is_retried_after_30s(make_harness: Any) -
     await h.play(1, 80)
     assert len(h.audd_calls) == calls + 2  # the miss and a retry ~30 s later
     assert (h.db.track_metadata(1) or {})["duration_seconds"] == 300
+
+
+# ---------------------------------------------------------------- self-correcting track ends
+
+
+async def test_the_next_track_trims_the_previous_one_to_its_real_end(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AudD's length is too long (another edit): the next track's start corrects the learning."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 80, 2: 600})  # song 1 really lasts 60 s on this record
+    await h.play(1, 60)
+    await h.play(2, 60)  # no gap: song 2 starts at 60 s, the soft boundary comes at 85 s
+    assert messages(caplog, "Track boundary (no gap)")
+    assert messages(caplog, "Artist 2 - Song 2 started 25s before the boundary")
+    songs = {track: {song for song, _ in seconds} for track, seconds in learned(h).items()}
+    assert songs[1] == {1}  # nothing of song 2 is left under song 1
+    assert messages(caplog, "Track 1: observed length 60s noted")
+
+
+async def test_an_observed_length_seen_twice_replaces_audds(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 80, 2: 600})
+    for _ in range(2):
+        await h.play(1, 60)
+        await h.play(2, 60)
+        await h.quiet(GAP, level=3)
+    assert messages(caplog, "Track 1: observed length 60s adopted")
+    metadata = h.db.track_metadata(1) or {}
+    assert metadata["duration_seconds"] == pytest.approx(60, abs=1)
+    assert metadata["duration_source"] == "observed"
+
+
+async def test_a_real_gap_gives_an_observed_length_but_a_dropout_does_not(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 60)
+    await h.quiet(GAP)  # digital zeros: a dropout, not the end of the song
+    assert messages(caplog, "observed length") == []
+    await h.play(1, 60)
+    await h.quiet(GAP, level=3)  # quiet hiss: a real gap after 60 s of song
+    assert messages(caplog, "Track 1: observed length 60s noted")
+
+
+async def test_a_local_hit_uses_the_stored_song_start_of_its_reference(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reference play that began mid-song no longer shifts the expected end of a replay."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 40, 2: 100})
+    await h.play(1, 40)
+    await h.play(2, 60)  # gapless: the passage of song 2 begins 5 s into it (soft boundary)
+    assert messages(caplog, "Expected end of Artist 2 - Song 2 at 95s (song started at -5s")
+    await h.quiet(GAP, level=3)
+    await h.play(2, 40)  # replay of song 2 from its start: recognized locally
+    assert messages(caplog, "Identified Artist 2 - Song 2 via local")
+    # without the stored start of the reference play this would say "song started at 5s"
+    assert messages(caplog, "Expected end of Artist 2 - Song 2 at 100s (song started at 0s")

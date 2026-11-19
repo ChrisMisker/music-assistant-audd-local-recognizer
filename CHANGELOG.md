@@ -33,6 +33,14 @@ wrong name (as long as AudD reports the track length, which it usually does).
   the next tracks get their chance even when one track in between is unknown to AudD. New
   advanced setting *Ask AudD more often (live and gapless records)*: every 30 seconds instead of
   90, at the cost of more requests.
+- **Self-correcting track ends on live and gapless records:** AudD's track length is often that
+  of another edit (on a live LP 10–30 seconds too long). When the next track is recognized, the
+  provider now knows where the previous one really ended: it removes what it learned past that
+  point and measures the real length; a length measured twice on your record replaces AudD's.
+  A real silence after a track also measures its length (a stream dropout does not). While a
+  length is not yet measured, learning stops 20 seconds before the expected end on such records.
+- A local recognition now knows where the song started even when the earlier play it matched
+  began in the middle of the song (after a boundary without silence), so the expected end is right.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the
