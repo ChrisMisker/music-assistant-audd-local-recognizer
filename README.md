@@ -251,6 +251,7 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `Track boundary: … dBFS for 2.0s` | A silence gap was detected: track change, or the record ended. |
 | `Expected end of … at 245s` | The track's length is known: learning stops a few seconds before that moment. |
 | `Track boundary (no gap): …` | The track should have ended but there was no silence (a gapless record): listening for the next track. |
+| `Stream dropout: … ignored` | The audio stream briefly delivered digital silence (a network/stream hiccup, not your record): the current track continues. |
 | `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
 | `AudD attempt n/20` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |

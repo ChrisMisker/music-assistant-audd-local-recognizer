@@ -43,8 +43,8 @@ def music(song: int, second: int) -> bytes:
     return np.full(RATE, 1000 * song + second, dtype="<i2").tobytes()
 
 
-def silence(level: int = 0) -> bytes:
-    """One second of silence: digital zeros (a dropout) or, with a level, quiet hiss."""
+def silence(level: int = 3) -> bytes:
+    """One second of silence: quiet hiss like a turntable (3 = -81 dBFS); 0 = a digital dropout."""
     return np.full(RATE, level, dtype="<i2").tobytes()
 
 
@@ -184,8 +184,8 @@ class Harness:
             self.engine.feed(music(song, second))
             await self.settle()
 
-    async def quiet(self, seconds: int, level: int = 0) -> None:
-        """Feed silence (digital zeros, or quiet hiss with a level such as 3 = -81 dBFS)."""
+    async def quiet(self, seconds: int, level: int = 3) -> None:
+        """Feed silence: quiet hiss (3 = -81 dBFS, like a turntable) or, with 0, digital zeros."""
         for _ in range(seconds):
             self.engine.feed(silence(level))
             await self.settle()

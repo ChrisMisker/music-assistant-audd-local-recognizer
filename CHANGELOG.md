@@ -41,6 +41,10 @@ wrong name (as long as AudD reports the track length, which it usually does).
   length is not yet measured, learning stops 20 seconds before the expected end on such records.
 - A local recognition now knows where the song started even when the earlier play it matched
   began in the middle of the song (after a boundary without silence), so the expected end is right.
+- **Stream dropouts no longer split a track:** the audio input sometimes delivers a second or two
+  of digital silence in the middle of a track (a stream hiccup, not the record). That used to end
+  the track and start recognition again; now it is ignored (log: `Stream dropout: … ignored`).
+  Longer digital silence (over 10 seconds, e.g. the source stopped) still ends the track.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

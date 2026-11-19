@@ -936,12 +936,21 @@ async def test_a_real_gap_gives_an_observed_length_but_a_dropout_does_not(
 ) -> None:
     caplog.set_level(logging.INFO)
     h = make_harness(durations={1: 300})
-    await h.play(1, 60)
-    await h.quiet(GAP)  # digital zeros: a dropout, not the end of the song
-    assert messages(caplog, "observed length") == []
-    await h.play(1, 60)
-    await h.quiet(GAP, level=3)  # quiet hiss: a real gap after 60 s of song
+    await h.play(1, 30)
+    await h.quiet(2, level=0)  # 2 s of digital zeros mid-song: a stream dropout
+    await h.play(1, 28, start=32)
+    assert messages(caplog, "Stream dropout: 2.0s of digital silence ignored")
+    assert messages(caplog, "Track boundary") == []
+    await h.quiet(GAP)  # quiet hiss: a real gap after 60 s of song
     assert messages(caplog, "Track 1: observed length 60s noted")
+
+
+async def test_a_long_digital_silence_is_a_gap(make_harness: Any) -> None:
+    """The source stopped sending audio: after the dropout limit the passage closes."""
+    h = make_harness()
+    await h.play(1, 30)
+    await h.quiet(int(eng.DROPOUT_MAX_SECONDS) + 1, level=0)
+    assert h.engine.passage is None
 
 
 async def test_a_local_hit_uses_the_stored_song_start_of_its_reference(

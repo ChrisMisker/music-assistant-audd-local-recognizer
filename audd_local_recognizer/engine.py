@@ -77,6 +77,11 @@ SONG_START_TOLERANCE_SECONDS = 2
 UNCERTAIN_END_GUARD_SECONDS = 20
 OBSERVED_LENGTH_TOLERANCE_SECONDS = 3.0
 DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
+# Stream dropouts: the Sendspin input sometimes delivers ~2 s of exact digital zeros in the middle
+# of a track (5x on 2026-11-19 morning). A turntable never produces exact zeros (the needle and
+# preamp hiss sit around -55..-80 dBFS), so such a run does not count as a gap: the passage
+# continues. Only a longer run (the source stopped sending audio) becomes a gap.
+DROPOUT_MAX_SECONDS = 10.0
 # A track recognized locally without a stored length gets one extra AudD request (from
 # AUDD_FIRST_ATTEMPT_SECONDS into the passage, at most this many per passage) just to learn its
 # length and the song position (user's choice, 2026-11-19: the extra requests are fine). Only a
@@ -473,6 +478,7 @@ class RecognitionEngine:
         self.lookup_phases = max(1, lookup_phases)
         self.audd_thorough = audd_thorough
         self.soft_boundaries = 0
+        self.dropout_seconds = 0.0
         self.background: set[asyncio.Task[None]] = set()
         self.frame_seconds = frame_seconds
         self._publish = publish
@@ -502,7 +508,7 @@ class RecognitionEngine:
         self.stream_seconds += chunk_seconds
         # Classify the chunk BEFORE it is buffered: a gap must be a hard boundary.
         level = pcm_dbfs(chunk, self.fmt)
-        event = self.gap.update(level, chunk_seconds)
+        event = self._gap_event(level, chunk_seconds)
         if event is GapEvent.GAP:
             self._close_passage(level, chunk_seconds)
         elif event is GapEvent.RESUME:
@@ -513,6 +519,25 @@ class RecognitionEngine:
             return  # inside a gap: no buffering, fingerprinting, matching or AudD
         self.passage.append(chunk, chunk_seconds)
         self._schedule(self.passage)
+
+    def _gap_event(self, level: float, chunk_seconds: float) -> GapEvent | None:
+        """Update the gap detector, treating a short run of digital zeros as a dropout."""
+        if level <= DROPOUT_DBFS and not self.gap.in_gap:
+            self.dropout_seconds += chunk_seconds
+            if self.dropout_seconds < DROPOUT_MAX_SECONDS:
+                return None  # keep the passage (and its clock) running through the dropout
+            # the source stopped sending audio: a real gap, counted from the first zero
+            event = self.gap.update(level, self.dropout_seconds)
+            self.dropout_seconds = 0.0
+            return event
+        if self.dropout_seconds:
+            self.logger.info(
+                "Stream dropout: %.1fs of digital silence ignored; passage %s continues",
+                self.dropout_seconds,
+                self.passage.short_id if self.passage else "-",
+            )
+            self.dropout_seconds = 0.0
+        return self.gap.update(level, chunk_seconds)
 
     def close(self) -> None:
         """Stop the stream and cancel in-flight work."""
