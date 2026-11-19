@@ -824,12 +824,28 @@ class RecognitionEngine:
         passage.evidence.clear()  # not needed once identified
         passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
         self._set_track_timing(passage, song_start_at, duration)
-        if self._publish(metadata):
+        if self._publish(self._report(passage, metadata)):
             self.logger.info("Reported stream metadata: %s", describe(metadata))
         else:
             # MA declined: the source has metadata of its own, or the session is gone.
             self.logger.info("Music Assistant declined our metadata; recognition stopped")
             self.stopped = True
+
+    @staticmethod
+    def _report(passage: Passage, metadata: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return what to show in MA: the track's metadata plus, when known, the playback position.
+
+        ``elapsed_seconds`` is the position in the song now (passage time since the song
+        started), ``playback_duration_seconds`` the track length as it plays on this turntable
+        (scaled by the speed correction, like the end guard). The stored metadata is not changed.
+        """
+        report = dict(metadata)
+        if passage.song_start_at is not None:
+            report["elapsed_seconds"] = max(0.0, passage.seconds - passage.song_start_at)
+            if passage.track_end_at is not None:
+                report["playback_duration_seconds"] = passage.track_end_at - passage.song_start_at
+        return report
 
     def _set_track_timing(
         self, passage: Passage, song_start_at: float | None, duration: Any

@@ -783,3 +783,40 @@ async def test_the_guard_scales_with_the_speed_correction(
     await h.play(1, 30)
     # timecode 24 at 24 s: song started at 24 - 24 * 0.98 = 0.48 s; ends at 0.48 + 98 = 98.5 s
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 98s")
+
+
+async def test_the_report_carries_position_and_length(make_harness: Any) -> None:
+    """MA gets the position in the song and the track length, so it can show a progress bar."""
+    h = make_harness(durations={1: 60})
+    await h.play(1, 30)
+    report = h.published[0]
+    # identified by AudD at 24 s with timecode 00:24: the song started with the passage
+    assert report["elapsed_seconds"] == pytest.approx(24, abs=1)
+    assert report["playback_duration_seconds"] == pytest.approx(60)
+    # the position belongs to this play only: it is not stored with the track
+    assert "elapsed_seconds" not in h.db.track_metadata(1)
+
+
+async def test_a_local_hit_reports_the_position_too(make_harness: Any) -> None:
+    h = make_harness(durations={1: 60})
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 40)
+    assert len(h.audd_calls) == calls
+    report = h.published[-1]
+    assert 0 < report["elapsed_seconds"] <= 40
+    assert report["playback_duration_seconds"] == pytest.approx(60, abs=1)
+
+
+async def test_without_timing_the_report_has_no_position(make_harness: Any) -> None:
+    h = make_harness()  # AudD reports no timecode or duration
+    await h.play(1, 30)
+    assert "elapsed_seconds" not in h.published[0]
+    assert "playback_duration_seconds" not in h.published[0]
+
+
+async def test_the_reported_length_follows_the_speed_correction(make_harness: Any) -> None:
+    h = make_harness(durations={1: 100}, audd_speed_percent=-2.0)
+    await h.play(1, 30)
+    assert h.published[0]["playback_duration_seconds"] == pytest.approx(98)

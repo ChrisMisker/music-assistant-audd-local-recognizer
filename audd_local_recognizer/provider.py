@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +60,13 @@ MAX_RECORDING_MINUTES = 600
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
 DEFAULT_MIN_GAP_SECONDS = 2
+
+
+def _whole_seconds(value: Any) -> int | None:
+    """Return a non-negative number of seconds as int (StreamMetadata wants int), else None."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return round(value)
 
 
 class AudDLocalRecognizerProvider(AudioAnalysisProvider):
@@ -494,6 +502,11 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 album=metadata.get("album"),
                 image_url=metadata.get("artwork"),
                 uri=metadata.get("uri"),
+                duration=_whole_seconds(metadata.get("playback_duration_seconds")),
+                elapsed_time=_whole_seconds(metadata.get("elapsed_seconds")),
+                elapsed_time_last_updated=(
+                    time.time() if metadata.get("elapsed_seconds") is not None else None
+                ),
             ),
         )
         return accepted is not False

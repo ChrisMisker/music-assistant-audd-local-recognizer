@@ -12,6 +12,10 @@ wrong name (as long as AudD reports the track length, which it usually does).
   end. Learning stops 5 seconds before that moment; if no silence follows within 5 seconds after
   it, the provider starts listening for the next track anyway. New log lines: `Expected end of …`
   and `Track boundary (no gap): …`.
+- **Track length and position in Music Assistant:** when the provider knows where the song
+  started and how long it is, Music Assistant now shows the position in the song and the track
+  length (a progress bar), instead of the time since the source started. The length follows the
+  speed correction, so the bar ends when the track ends on your turntable.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the
