@@ -243,6 +243,19 @@ def main() -> None:
         help="engine option: repeat each lookup at N sub-frame offsets (1 = off)",
     )
     parser.add_argument(
+        "--density-divisor",
+        type=int,
+        metavar="N",
+        help="experiment: keep 1/N of the fingerprints instead of the shipped density",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        metavar="PATH",
+        help="experiment: use (and keep) this database instead of a temporary copy of the "
+        "folder's; created empty if missing, so several folders can be replayed in a row",
+    )
+    parser.add_argument(
         "--keep-later-references",
         action="store_true",
         help="keep references learned at/after the recording started (by default they are "
@@ -250,6 +263,10 @@ def main() -> None:
         "replay recognize itself)",
     )
     args = parser.parse_args()
+    if args.density_divisor:
+        from audd_local_recognizer import engine  # noqa: PLC0415
+
+        vars(engine)["DENSITY_DIVISOR"] = args.density_divisor  # the engine's own name for it
     files = sorted(
         path for path in args.folder.glob("*_[0-9][0-9].*") if path.suffix in SEGMENT_SUFFIXES
     )
@@ -264,9 +281,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         for started, group in groupby(files, key=lambda p: p.name[:15]):
             group_files = list(group)
-            db_path = Path(tmp) / f"{started}.sqlite3"
+            db_path = args.db or Path(tmp) / f"{started}.sqlite3"
             at_start = args.folder / f"{started}_db.sqlite3"
-            if at_start.exists():  # the database as it was when this recording started
+            if args.db:
+                pass  # the experiment's own database, carried from folder to folder
+            elif at_start.exists():  # the database as it was when this recording started
                 shutil.copyfile(at_start, db_path)
                 print(
                     f"{started}: using the database copy from the recording's start",
