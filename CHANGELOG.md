@@ -20,12 +20,18 @@ wrong name (as long as AudD reports the track length, which it usually does).
   60, up to 600), and every recording now gets the recognizer's own log of that session next to
   it, so it can be analysed later even after Music Assistant was restarted.
 
+### Changed
+
+- *Recognize all live audio sources* is now an advanced setting, listed after *Audio sources
+  to recognize*: choosing your turntable is the normal way. If you had it turned on, it stays on.
+
 ### ⚠️ Worth knowing
 
 - **Music Assistant moved the Sendspin input** from the separate *Sendspin Source* plugin into the
   Sendspin provider (Nightly of 2026-11-19 and later). A turntable you selected under the old
   plugin keeps being recognized; re-select it once under *Audio sources to recognize* to make that
-  permanent, and check that *Allow analysis of the audio input* is still on for that input.
+  permanent. *Allow analysis of the audio input* (on by default) is a setting of the Sendspin
+  player that has the input.
 - Tracks learned before this version have no stored length yet. They get one the next time AudD
   identifies them; until then a local recognition of such a track has no end guard.
 

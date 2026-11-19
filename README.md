@@ -170,7 +170,7 @@ Things to keep in mind:
 |---|---|
 | **AudD API token** | Needed to identify new music. Optional if you only want local recognition. |
 | **Audio sources to recognize** | **Choose your source here** (e.g. your turntable). Nothing is recognized until you do. |
-| **Recognize all live audio sources** | Off by default. Turn on to recognize every live source that allows analysis. |
+| *Advanced:* **Recognize all live audio sources** | Off by default. Turn on only if every live source that allows analysis should be recognized; normally you choose your sources above. |
 | **Faster recognition at the start of known tracks** | On by default. Stores more fingerprints of the first 30 seconds of every track, so a replay is usually recognized within 12–18 s without AudD. Uses ~35 % more disk space. |
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |

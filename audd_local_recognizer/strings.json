@@ -10,7 +10,7 @@
     },
     "all_audio_sources": {
       "label": "Recognize all live audio sources",
-      "description": "Off by default: choose below which live sources (e.g. your turntable) to recognize. Turn on to recognize every live audio source that allows analysis."
+      "description": "Advanced, off by default: normally you choose your sources (e.g. your turntable) under 'Audio sources to recognize'. Turn on only if every live audio source that allows analysis should be recognized."
     },
     "audio_sources": {
       "label": "Audio sources to recognize",

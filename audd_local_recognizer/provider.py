@@ -144,14 +144,6 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 ),
             ),
             ConfigEntry(
-                key=CONF_ALL_AUDIO_SOURCES,
-                type=ConfigEntryType.BOOLEAN,
-                # Off by default (MA maintainers' advice): the user picks the sources to analyse.
-                default_value=False,
-                required=False,
-                label="Recognize all live audio sources",
-            ),
-            ConfigEntry(
                 key=CONF_AUDIO_SOURCES,
                 type=ConfigEntryType.STRING,
                 default_value=[],
@@ -161,6 +153,16 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 depends_on=CONF_ALL_AUDIO_SOURCES,
                 depends_on_value=False,
                 label="Audio sources to recognize",
+            ),
+            ConfigEntry(
+                key=CONF_ALL_AUDIO_SOURCES,
+                type=ConfigEntryType.BOOLEAN,
+                # Off by default and advanced (MA maintainers' advice): the user picks the
+                # sources to analyse; recognizing everything is a deliberate expert choice.
+                default_value=False,
+                required=False,
+                advanced=True,
+                label="Recognize all live audio sources",
             ),
             ConfigEntry(
                 key=CONF_FAST_START,

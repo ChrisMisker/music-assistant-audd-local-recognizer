@@ -10,7 +10,7 @@
     },
     "all_audio_sources": {
       "label": "Alle live audiobronnen herkennen",
-      "description": "Standaard uit: kies hieronder welke live bronnen (bijvoorbeeld je platenspeler) herkend worden. Zet aan om elke live audiobron te herkennen die analyse toestaat."
+      "description": "Geavanceerd, standaard uit: normaal kies je je bronnen (bijvoorbeeld je platenspeler) bij 'Te herkennen audiobronnen'. Zet alleen aan als elke live audiobron die analyse toestaat herkend moet worden."
     },
     "audio_sources": {
       "label": "Te herkennen audiobronnen",
