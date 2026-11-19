@@ -55,7 +55,9 @@ wrong name (as long as AudD reports the track length, which it usually does).
   recognized song started are no longer learned.
 - **Recording for troubleshooting** (advanced): new setting *Maximum recording (minutes)* (default
   60, up to 600), and every recording now gets the recognizer's own log of that session next to
-  it, so it can be analysed later even after Music Assistant was restarted.
+  it, so it can be analysed later even after Music Assistant was restarted. A silence of 30
+  seconds or more (turning the record over) starts a new recording, so a finished side can be
+  copied while the next one plays; playback itself is not affected.
 
 ### Changed
 

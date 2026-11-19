@@ -27,6 +27,27 @@ if TYPE_CHECKING:
 MAX_RECORDING_SECONDS = 3600  # default: one LP, both sides (a setting can raise it)
 SEGMENT_SECONDS = 300
 FLUSH_SECONDS = 10  # write to disk in blocks of this many seconds
+# A silence this long (turning the record over, changing records) ends the current recording; the
+# next music starts a new one with its own session log and database copy, so a finished side can
+# be fetched while the next one plays. The MA stream itself is not touched.
+RECORDING_SPLIT_SILENCE_SECONDS = 30.0
+
+
+def split_action(
+    *, recording: bool, waiting: bool, in_gap: bool, silence_seconds: float
+) -> str | None:
+    """
+    Return "split" (end the recording), "resume" (start a new one) or None for this chunk.
+
+    recording: a recording runs for the session; waiting: one was split and waits for music.
+    """
+    if recording and in_gap and silence_seconds >= RECORDING_SPLIT_SILENCE_SECONDS:
+        return "split"
+    if waiting and not in_gap:
+        return "resume"
+    return None
+
+
 # The same line format as the Music Assistant log, so the report and replay scripts read both.
 LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"

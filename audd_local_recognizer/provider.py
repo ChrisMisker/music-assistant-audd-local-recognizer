@@ -25,7 +25,14 @@ from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
-from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder, SessionLog
+from .recording import (
+    FLUSH_SECONDS,
+    MAX_RECORDING_SECONDS,
+    RECORDING_SPLIT_SILENCE_SECONDS,
+    InputRecorder,
+    SessionLog,
+    split_action,
+)
 from .sources import selected_match, source_key
 
 if TYPE_CHECKING:
@@ -92,6 +99,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         self._placeholders: dict[str, StreamMetadata | None] = {}
         self._recorders: dict[str, tuple[InputRecorder, asyncio.Lock]] = {}
         self._session_logs: dict[str, SessionLog] = {}
+        # sessions whose recording was split at a long silence, and their PCM format
+        self._split_waiting: set[str] = set()
+        self._formats: dict[str, PcmFormat] = {}
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -443,6 +453,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         return True
 
     async def _start_recording(self, session_id: str, fmt: PcmFormat) -> None:
+        self._formats[session_id] = fmt
         folder = self._storage_dir() / RECORDINGS_SUBDIR
         max_seconds = self._recording_seconds()
         recorder = await asyncio.to_thread(
@@ -476,6 +487,25 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self._speed_correction(),
             "on" if self._fast_start() else "off",
         )
+
+    async def _maybe_split_recording(self, session_id: str, engine: RecognitionEngine) -> None:
+        """End the recording at a long silence and start a new one when music returns."""
+        action = split_action(
+            recording=session_id in self._recorders,
+            waiting=session_id in self._split_waiting,
+            in_gap=engine.gap.in_gap,
+            silence_seconds=engine.gap.silence_seconds,
+        )
+        if action == "split":
+            await self._stop_recording(session_id)
+            self._split_waiting.add(session_id)
+            self.logger.info(
+                "Recording split after %ds of silence; the next recording starts with the music",
+                int(RECORDING_SPLIT_SILENCE_SECONDS),
+            )
+        elif action == "resume" and (fmt := self._formats.get(session_id)) is not None:
+            self._split_waiting.discard(session_id)
+            await self._start_recording(session_id, fmt)
 
     async def _record(self, session_id: str, pcm_chunk: bytes) -> None:
         if (entry := self._recorders.get(session_id)) is None:
@@ -554,6 +584,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
         if (engine := self._engines.get(session_id)) is not None:
             engine.feed(pcm_chunk)
+            if self._recorders or self._split_waiting:
+                await self._maybe_split_recording(session_id, engine)
         if self._recorders:
             try:
                 await self._record(session_id, pcm_chunk)
@@ -569,6 +601,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             engine.close()
             self.logger.info("Analysis ended: session=%s", session_id)
         await self._stop_recording(session_id)
+        self._split_waiting.discard(session_id)
+        self._formats.pop(session_id, None)
         await super().cancel(session_id)
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
@@ -577,4 +611,6 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
         await self._stop_recording(session_id)
+        self._split_waiting.discard(session_id)
+        self._formats.pop(session_id, None)
         return None

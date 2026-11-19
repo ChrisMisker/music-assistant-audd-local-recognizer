@@ -17,6 +17,7 @@ from audd_local_recognizer.recording import (
     SessionLog,
     pcm_to_s16_interleaved,
     recorded_seconds,
+    split_action,
 )
 
 if TYPE_CHECKING:
@@ -111,3 +112,23 @@ def test_session_log_copies_info_lines_in_the_ma_format(tmp_path: Path) -> None:
         lines[0],
     )
     assert not any(isinstance(h, QueueHandler) for h in logger.handlers)
+
+
+@pytest.mark.parametrize(
+    ("recording", "waiting", "in_gap", "silence", "expected"),
+    [
+        (True, False, True, 31.0, "split"),  # turning the record over
+        (True, False, True, 5.0, None),  # an ordinary gap between tracks
+        (True, False, False, 0.0, None),  # music
+        (False, True, True, 60.0, None),  # still silent: wait
+        (False, True, False, 0.0, "resume"),  # music again: new recording
+        (False, False, False, 0.0, None),  # recording off
+    ],
+)
+def test_split_action(
+    *, recording: bool, waiting: bool, in_gap: bool, silence: float, expected: str | None
+) -> None:
+    assert (
+        split_action(recording=recording, waiting=waiting, in_gap=in_gap, silence_seconds=silence)
+        == expected
+    )
