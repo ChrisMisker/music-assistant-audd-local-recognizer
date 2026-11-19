@@ -10,7 +10,9 @@
 # and the commits on the server's dev branch since the last checked commit that touch what we
 # depend on: the audio-analysis provider API, live-source analysis, Sendspin, provider loading
 # and the community catalog. Also shows commits in the community-catalog repository (rules and
-# the check-provider workflow). Read-only apart from --mark; needs `gh`.
+# the check-provider workflow), and the OPEN pull requests of the server that touch those paths
+# (what is coming, before it is merged) and of the community catalog. Read-only apart from --mark;
+# needs `gh`.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -66,6 +68,26 @@ fi
 gh api -X GET "repos/$CATALOG/commits" -f per_page=15 ${csince:+-f since="$csince"} \
   -q '.[] | "  \(.sha[0:7])  \(.commit.committer.date[0:10])  \(.commit.message | split("\n")[0])"' \
   | grep -v "^  ${last_catalog:0:7} " || echo "  (none)"
+
+echo
+echo "== Open server pull requests that touch those paths (not merged yet: what is coming)"
+gh pr list -R "$SERVER" --state open --limit 200 --json number,title,updatedAt,isDraft,files \
+  | PATHS="${PATHS[*]}" python3 -c '
+import json, os, sys
+paths = os.environ["PATHS"].split()
+hits = []
+for pr in json.load(sys.stdin):
+    touched = sorted({p for f in pr["files"] for p in paths if f["path"].startswith(p)})
+    if touched:
+        draft = "  (draft)" if pr["isDraft"] else ""
+        hits.append("  #%s  %s  %s%s  [%s]" % (pr["number"], pr["updatedAt"][:10], pr["title"], draft, ", ".join(touched)))
+print("\n".join(hits) if hits else "  (none)")
+'
+
+echo
+echo "== Open community catalog pull requests"
+gh pr list -R "$CATALOG" --state open --limit 30 --json number,title,updatedAt \
+  -q '.[] | "  #\(.number)  \(.updatedAt[0:10])  \(.title)"' | grep . || echo "  (none)"
 
 if [[ " $* " == *" --mark "* ]]; then
   printf 'server=%s\ncatalog=%s\nchecked=%s\n' "$head_server" "$head_catalog" "$(date +%Y-%m-%d)" > "$STATE"
