@@ -305,18 +305,28 @@ async def test_h_different_track_is_not_a_false_local_hit(
 # ---------------------------------------------------------------- AudD scheduling
 
 
-async def test_audd_cadence_and_cap_for_unknown_passage(make_harness: Any) -> None:
+async def test_audd_cadence_and_cap_for_unknown_passage(
+    make_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(eng, "AUDD_MAX_ATTEMPTS_PER_PASSAGE", 8)
     h = make_harness(audd_known=set())
-    await h.play(9, 1000)
-    # 24, 54, 84 (30 s apart), then every 90 s, capped at 8 attempts per passage
-    assert len(h.audd_calls) == eng.AUDD_MAX_ATTEMPTS_PER_PASSAGE
+    await h.play(9, 600)
+    # 24, 54, 84, ... (every 30 s while unidentified), capped per passage
+    assert len(h.audd_calls) == 8
     window_starts = [c[0] % 1000 for c in h.audd_calls]
-    assert window_starts[:4] == [12, 42, 72, 162]  # never the 0-12 s intro
+    assert window_starts[:5] == [12, 42, 72, 102, 132]  # never the 0-12 s intro
+
+
+async def test_a_long_unidentified_passage_keeps_trying_every_30s(make_harness: Any) -> None:
+    """On a live record one passage can hold several tracks: each gets a chance."""
+    h = make_harness(audd_known=set())
+    await h.play(9, 300)
+    assert len(h.audd_calls) == 10  # 24 s … 294 s
 
 
 async def test_audd_cadence_resets_for_new_passage(make_harness: Any) -> None:
     h = make_harness(audd_known=set())
-    await h.play(9, 200)  # 4 attempts, now on the slow cadence
+    await h.play(9, 200)  # several attempts in a long unknown passage
     await h.quiet(GAP)
     h.audd_known = {2}
     calls_before = len(h.audd_calls)
@@ -869,11 +879,8 @@ async def test_the_length_check_ignores_another_name(
     assert [m["title"] for m in h.published] == ["Song 1", "Song 1"]
 
 
-async def test_a_missed_length_request_is_retried_after_30s(
-    make_harness: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Even when the passage is on the slow AudD cadence, the length retry is not 90 s away."""
-    monkeypatch.setattr(eng, "AUDD_FAST_ATTEMPTS", 0)  # every attempt would wait 90 s
+async def test_a_missed_length_request_is_retried_after_30s(make_harness: Any) -> None:
+    """A length request that AudD misses is tried again 30 s later."""
     h = make_harness()
     await h.play(1, 60)
     await h.quiet(GAP)

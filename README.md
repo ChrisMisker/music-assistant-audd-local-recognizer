@@ -105,11 +105,11 @@ How many requests to expect:
   Occasionally 1, when local recognition takes longer than ~24 seconds.
 - **An unknown track** usually costs **1 to 3 requests**: AudD often doesn't recognize the
   first sample of a track and needs another try.
-- **A track AudD can't identify** keeps being tried while it plays, but sparingly. The first
-  request is sent after ~24 seconds of the track, the next ones 30 seconds apart (three in
-  total), then every 90 seconds, with a hard maximum of **8 requests per track**. A typical
-  3–5 minute track that AudD doesn't know therefore costs 4–5 requests; 8 is only reached by
-  tracks of 9 minutes or longer.
+- **A track AudD can't identify** keeps being tried while it plays: the first request after
+  ~24 seconds, then one every 30 seconds (at most 40 in a row, i.e. 20 minutes). A 4-minute
+  track that AudD doesn't know therefore costs about 8 requests. This matters on live and
+  gapless records, where several tracks run into each other without silence: every next track
+  gets its chance.
 - Requests stop as soon as the track is identified. There are never two requests within 30
   seconds of each other. After an AudD or network error the provider pauses (1 minute, doubling
   up to 15 minutes).
@@ -253,7 +253,7 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `Track boundary (no gap): …` | The track should have ended but there was no silence (a gapless record): listening for the next track. |
 | `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
-| `AudD attempt n/8` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
+| `AudD attempt n/40` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
 | `Identified … via local after 31s` | The track was recognized (locally or via AudD), and when. |
 | `LOCAL CANDIDATE: … votes=2 acc=4 -> pending` | A weak match; `acc` adds up the votes of this track that line up in time with an earlier play (6 needed). |
 | `LOCAL HIT: … lookups=3 shift=+0.42s … -> accepted (time-consistent)` | Recognized from evidence added up over several lookups. |

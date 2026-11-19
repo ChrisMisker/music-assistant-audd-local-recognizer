@@ -79,12 +79,13 @@ MAX_EARLY_WINDOWS = 20
 
 # AudD cadence per unknown passage. The first attempt waits for 24 s of audio: in real vinyl
 # tests AudD missed the first 12 s (intro) of every track (6/6) and matched 30-42 s, while
-# local lookups still start at 12 s. Then 30 s between attempts, later 90 s, capped.
+# local lookups still start at 12 s. Then every 30 s while the passage stays unidentified (user's
+# choice 2026-11-19: on live/gapless records one passage spans several tracks, and the old slow
+# cadence of 90 s after 3 attempts with a cap of 8 left the next tracks without a chance). The cap
+# is a safety net (20 minutes of unidentified music).
 AUDD_FIRST_ATTEMPT_SECONDS = 24
-AUDD_FAST_ATTEMPTS = 3
-AUDD_FAST_INTERVAL_SECONDS = 30
-AUDD_SLOW_INTERVAL_SECONDS = 90
-AUDD_MAX_ATTEMPTS_PER_PASSAGE = 8
+AUDD_RETRY_INTERVAL_SECONDS = 30
+AUDD_MAX_ATTEMPTS_PER_PASSAGE = 40
 # Stream-wide: never two AudD calls closer than this, whatever the passages do.
 AUDD_MIN_INTERVAL_SECONDS = 30
 # Stream-wide exponential backoff, only for real HTTP/network/API failures.
@@ -781,12 +782,7 @@ class RecognitionEngine:
             self.logger.debug("AudD skipped (passage %s): %s", passage.short_id, reason)
             return None
         passage.audd_attempts += 1
-        interval = (
-            AUDD_FAST_INTERVAL_SECONDS
-            if passage.audd_attempts < AUDD_FAST_ATTEMPTS
-            else AUDD_SLOW_INTERVAL_SECONDS
-        )
-        passage.next_audd_at = passage.seconds + interval
+        passage.next_audd_at = passage.seconds + AUDD_RETRY_INTERVAL_SECONDS
         self.last_audd_at = self.stream_seconds
         self.logger.info(
             "AudD attempt %d/%d on %ds sample (passage %s)",
@@ -985,14 +981,7 @@ class RecognitionEngine:
             passage.short_id,
         )
         hit = await self._try_audd(passage, pcm, window_end)
-        if hit is None:
-            # The track is known already: retry soon, not at the slow cadence of later attempts
-            # to identify an unknown passage (the stream-wide minimum interval still applies).
-            passage.next_audd_at = min(
-                passage.next_audd_at, passage.seconds + AUDD_FAST_INTERVAL_SECONDS
-            )
-            return
-        if not self._is_current(passage) or passage.metadata is None:
+        if hit is None or not self._is_current(passage) or passage.metadata is None:
             return
         passage.duration_checks_left = 0  # AudD answered: no further checks this passage
         known = {track_key(passage.metadata), *passage.metadata.get(ALIASES, [])}
