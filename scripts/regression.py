@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -43,6 +44,7 @@ from typing import Any
 SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT))
 
 from vote_report import parse  # noqa: E402
 
@@ -110,24 +112,63 @@ def recording_folders(root: Path, only: str | None) -> list[Path]:
 
 
 def _truths(folder: Path) -> Any:
-    """Return a function (moment -> live track) from the folder's session logs, or None."""
+    """
+    Return a function (moment -> live track) from the folder's logs, or None.
+
+    A session log (<start>.log) only answers for its own session: the one that started last
+    before that moment. An exported MA log (any other name) answers for any moment.
+    """
     from replay_recording import Oracle  # noqa: PLC0415 - imports the engine
 
-    oracles = [Oracle(log) for log in sorted(folder.glob("*.log"))]
-    if not oracles:
+    sessions: list[tuple[datetime, Any]] = []
+    general: list[Any] = []
+    for log in sorted(folder.glob("*.log")):
+        try:
+            started = datetime.strptime(log.stem, "%Y%m%d-%H%M%S")  # noqa: DTZ007 - log clock
+        except ValueError:
+            general.append(Oracle(log))
+        else:
+            sessions.append((started, Oracle(log)))
+    if not sessions and not general:
         return None
 
     def truth(when: datetime) -> str | None:
-        for oracle in oracles:
+        own = [oracle for started, oracle in sessions if started <= when]
+        for oracle in [*own[-1:], *general]:
             if (track := oracle.track_at(when)) is not None:
-                return track
+                return str(track)
         return None
 
     return truth
 
 
-def summarize(lines: list[str], truth: Any) -> list[PassageResult]:
-    """Turn replay log lines into passage results."""
+def _same_track(folder: Path) -> Any:
+    """Return a function (name, name -> bool) that applies the DB's key rules and aliases."""
+    from audd_local_recognizer.database import ALIASES, track_key  # noqa: PLC0415
+
+    def key(label: str) -> str:
+        artist, _, title = label.partition(" - ")
+        return track_key({"artist": artist, "title": title or artist})
+
+    canonical: dict[str, str] = {}
+    snapshot = folder / "fingerprints.sqlite3"
+    if snapshot.exists():
+        with sqlite3.connect(f"file:{snapshot}?immutable=1", uri=True) as db:
+            for (meta,) in db.execute("SELECT metadata_json FROM tracks"):
+                metadata = json.loads(meta)
+                own = track_key(metadata)
+                for alias in metadata.get(ALIASES, []):
+                    canonical[alias] = own
+
+    def same(a: str, b: str) -> bool:
+        ka, kb = key(a), key(b)
+        return canonical.get(ka, ka) == canonical.get(kb, kb)
+
+    return same
+
+
+def summarize(lines: list[str], truth: Any, same: Any = None) -> list[PassageResult]:
+    """Turn replay log lines into passage results (truth kept only when it names another track)."""
     passages, _versions = parse(lines)
     results = []
     for p in passages:
@@ -135,6 +176,8 @@ def summarize(lines: list[str], truth: Any) -> list[PassageResult]:
         known = None
         if truth is not None and p.track is not None and p.after is not None:
             known = truth(p.started + timedelta(seconds=p.after))
+            if known is not None and (known == p.track or (same and same(known, p.track))):
+                known = p.track
         results.append(
             PassageResult(
                 start=f"{p.started:%H:%M:%S}",
@@ -168,7 +211,9 @@ def replay(folder: Path) -> FolderResult:
     if done.returncode != 0:
         result.error = (done.stderr.strip().splitlines() or ["failed"])[-1]
         return result
-    result.passages = summarize(done.stdout.splitlines(keepends=True), _truths(folder))
+    result.passages = summarize(
+        done.stdout.splitlines(keepends=True), _truths(folder), _same_track(folder)
+    )
     return result
 
 

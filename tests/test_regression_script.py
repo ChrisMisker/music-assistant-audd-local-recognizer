@@ -75,3 +75,26 @@ def test_compare_lists_changed_passages(tmp_path: Path) -> None:
     assert "local 0→1" in report
     assert "audd_calls 1→0" in report
     assert "A - Song (AudD @24s, 1 AudD) → A - Song (local @18s, 0 AudD)" in report
+
+
+def test_truth_uses_its_own_session_and_the_track_key_rules(tmp_path: Path) -> None:
+    """An earlier session's open last passage and an edition suffix are no WRONG."""
+    regression = _module()
+    head = "INFO (MainThread) [music_assistant.audd_local_recognizer] "
+    (tmp_path / "20261119-100000.log").write_text(
+        f"2026-11-19 10:00:01.000 {head}Passage aaaaaaaa started (stream started)\n"
+        f"2026-11-19 10:00:25.000 {head}Identified A - Old via AudD after 24s "
+        "(passage aaaaaaaa, AudD calls 1)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "20261119-103000.log").write_text(
+        f"2026-11-19 10:30:01.000 {head}Passage bbbbbbbb started (stream started)\n"
+        f"2026-11-19 10:30:25.000 {head}Identified B - New (Album Version) via AudD after 24s "
+        "(passage bbbbbbbb, AudD calls 1)\n",
+        encoding="utf-8",
+    )
+    truth = regression._truths(tmp_path)
+    assert truth(datetime(2026, 11, 19, 10, 30, 40)) == "B - New (Album Version)"  # noqa: DTZ001
+    same = regression._same_track(tmp_path)
+    assert same("B - New (Album Version)", "B - New")
+    assert not same("B - New", "A - Old")
