@@ -53,7 +53,9 @@ from regression import (  # noqa: E402
 )
 
 
-def run_density(folders: list[Path], divisor: int, db_path: Path) -> list[FolderResult]:
+def run_density(
+    folders: list[Path], divisor: int, db_path: Path, fast_start: float = FAST_START_SECONDS
+) -> list[FolderResult]:
     """Replay every folder in order into one database at this density."""
     db_path.unlink(missing_ok=True)
     results: list[FolderResult] = []
@@ -64,7 +66,7 @@ def run_density(folders: list[Path], divisor: int, db_path: Path) -> list[Folder
             str(folder),
             *REPLAY_OPTIONS,
             "--fast-start",
-            str(FAST_START_SECONDS),
+            f"{fast_start:g}",
             "--density-divisor",
             str(divisor),
             "--db",
@@ -122,18 +124,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--recordings", type=Path, default=DEFAULT_RECORDINGS)
     parser.add_argument("--divisors", type=int, nargs="+", default=[32, 16, 8])
+    parser.add_argument(
+        "--fast-start",
+        type=float,
+        default=FAST_START_SECONDS,
+        metavar="SECONDS",
+        help="fast start window (0 = off: then only the tested density decides)",
+    )
     args = parser.parse_args()
     folders = recording_folders(args.recordings, None)
     if not folders:
         sys.exit(f"no recordings in {args.recordings}")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 - local file name
-    out = args.recordings / "regression" / "density" / stamp
+    out = args.recordings / "regression" / "density" / f"{stamp}-fs{args.fast_start:g}"
     out.mkdir(parents=True, exist_ok=True)
     print(f"Replaying {len(folders)} folders from an empty DB at 1/{args.divisors}…", flush=True)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=len(args.divisors)) as pool:
         futures = {
-            d: pool.submit(run_density, folders, d, out / f"d{d}.sqlite3") for d in args.divisors
+            d: pool.submit(run_density, folders, d, out / f"d{d}.sqlite3", args.fast_start)
+            for d in args.divisors
         }
         runs = {d: future.result() for d, future in futures.items()}
     summary = {d: {**_sum(runs[d]), **_db_stats(out / f"d{d}.sqlite3")} for d in args.divisors}
