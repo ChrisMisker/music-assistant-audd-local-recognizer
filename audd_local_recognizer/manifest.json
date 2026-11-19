@@ -3,7 +3,7 @@
   "domain": "audd_local_recognizer",
   "stage": "experimental",
   "name": "Audio Recognizer: AudD + Local Fingerprints",
-  "description": "Recognizes music on live audio sources such as a turntable. Known tracks are recognized locally from fingerprints it learns; unknown tracks are identified by sending a short sample to AudD (a paid service, API token required).",
+  "description": "Recognizes music on live audio sources such as a turntable. Known tracks are recognized locally from fingerprints it learns; unknown tracks are identified by sending a short sample to AudD (a paid service with a free trial; API token required).",
   "codeowners": [
     "@ChrisMisker"
   ],

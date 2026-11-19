@@ -126,7 +126,7 @@ settings in Music Assistant.
 
 - **Only audio of music that isn't recognized locally** is sent to AudD: one sample of about
   12 seconds of mono audio per request, together with your API token. A track may need several
-  requests (up to 8, see [How many requests to expect](#about-audd-a-paid-service-with-a-free-trial)),
+  requests (at most 20, see [How many requests to expect](#about-audd-a-paid-service-with-a-free-trial)),
   so several samples of the same track can be sent. Nothing else is sent.
 - **Known tracks are recognized locally**; no audio of them is sent anywhere.
 - The **local fingerprints are computed by this provider** (Panako fingerprints via

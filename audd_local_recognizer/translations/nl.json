@@ -1,7 +1,7 @@
 {
   "manifest": {
     "name": "Audioherkenning: AudD + lokale fingerprints",
-    "description": "Herkent muziek op live audiobronnen zoals een platenspeler. Bekende nummers worden lokaal herkend aan de hand van fingerprints die de provider leert; onbekende nummers worden geïdentificeerd door een kort fragment naar AudD te sturen (een betaalde dienst, API-token nodig)."
+    "description": "Herkent muziek op live audiobronnen zoals een platenspeler. Bekende nummers worden lokaal herkend aan de hand van fingerprints die de provider leert; onbekende nummers worden geïdentificeerd door een kort fragment naar AudD te sturen (een betaalde dienst met een gratis proefperiode; API-token nodig)."
   },
   "config_entries": {
     "audd_api_token": {
