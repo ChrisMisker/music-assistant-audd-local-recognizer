@@ -96,6 +96,15 @@ def test_time_consistent_evidence_adds_up_across_lookups() -> None:
     assert best.shift_seconds == pytest.approx(30.0)
 
 
+def test_the_time_consistent_bar_rises_with_the_number_of_lookups() -> None:
+    """Every lookup is another chance for an accidental cluster (measured 2026-11-19)."""
+    assert eng.coherent_votes_required(2) == 6
+    assert eng.coherent_votes_required(6) == 6  # the first minute: as before
+    # the false "Easy Lover": 6 accidental votes after 30 lookups is no longer enough
+    assert eng.coherent_votes_required(30) == 10
+    assert eng.coherent_votes_required(27) < 10  # a genuine live-LP hit: 10 votes at 27 lookups
+
+
 def test_evidence_at_random_shifts_never_adds_up() -> None:
     """Accidental 2-vote windows over a whole long passage stay at 2 coherent votes."""
     evidence = TimelineEvidence(frame_seconds=1.0)

@@ -64,6 +64,11 @@ wrong name (as long as AudD reports the track length, which it usually does).
 
 - *Recognize all live audio sources* is now an advanced setting, listed after *Audio sources
   to recognize*: choosing your turntable is the normal way. If you had it turned on, it stays on.
+- **Fewer false local matches when AudD can't help** (no token, AudD unavailable, or a track AudD
+  doesn't know): the longer an unknown track plays, the more evidence a local match now needs. In
+  a test without AudD, an unknown Barry White track was taken for a Phil Collins track after three
+  minutes, and the wrong name was then learned. Normal recognition is unaffected: known tracks are
+  still recognized in about 18 seconds.
 
 ### ⚠️ Worth knowing
 

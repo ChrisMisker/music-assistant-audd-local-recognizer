@@ -141,7 +141,15 @@ CONFIRMATIONS_REQUIRED = 2
 # earlier play. Genuine replays stay within +-0.15 s over minutes; accidental hits fall at random
 # shifts. Offline on three real sessions (2026-11-18): genuine 6-21 votes after 18-24 s, accidental
 # at most 3 over whole 4-5 minute passages (30-51 lookups). A hash counts once per cluster.
+# Every lookup is another chance for an accidental cluster, so the bar rises with the number of
+# lookups: max(6, 5 + lookups/6) votes (6 up to 1 minute, 10 after 3 minutes). Measured
+# 2026-11-19 on all 12 recordings replayed without AudD (no token): accidental clusters reached
+# 6 votes after 30 lookups (a false "Easy Lover" that poisoned the DB) and 5 votes from 120 s on;
+# this rule rejects all 217, keeps every genuine time-consistent hit up to 168 s (median 18 s),
+# with at least 2.3 votes margin to the closest accidental cluster.
 COHERENT_VOTES = 6
+COHERENT_VOTES_BASE = 5
+COHERENT_LOOKUPS_PER_EXTRA_VOTE = 6
 COHERENT_LOOKUPS = 2  # from at least this many lookups (a single window is judged above)
 COHERENCE_BIN_SECONDS = 0.05
 COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
@@ -407,6 +415,11 @@ class Passage:
         self.pcm.extend(chunk)
         if (excess := len(self.pcm) - self.window_bytes) > 0:
             del self.pcm[:excess]
+
+
+def coherent_votes_required(lookups: int) -> float:
+    """Return the votes a time-consistent cluster needs after this many lookups."""
+    return max(COHERENT_VOTES, COHERENT_VOTES_BASE + lookups / COHERENT_LOOKUPS_PER_EXTRA_VOTE)
 
 
 def _local_song_start(
@@ -810,7 +823,7 @@ class RecognitionEngine:
         coherence = passage.evidence.best()
         if (
             coherence is None
-            or coherence.votes < COHERENT_VOTES
+            or coherence.votes < coherent_votes_required(passage.evidence.lookups)
             or coherence.lookups < COHERENT_LOOKUPS
         ):
             return False
