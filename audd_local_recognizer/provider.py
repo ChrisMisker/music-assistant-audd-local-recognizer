@@ -25,6 +25,7 @@ from .debug_samples import write_debug_sample
 from .engine import GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
 from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder, SessionLog
+from .sources import selected_match, source_key
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -269,7 +270,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                     continue
                 options.extend(
                     ConfigValueOption(
-                        f"{provider.instance_id}|{source.item_id}",
+                        source_key(provider.instance_id, source.item_id),
                         title=f"{provider.name}: {source.name}",
                     )
                     for source in await get_sources()
@@ -326,7 +327,20 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     def _source_enabled(self, streamdetails: StreamDetails) -> bool:
         if bool(self.config.get_value(CONF_ALL_AUDIO_SOURCES)):
             return True
-        return f"{streamdetails.provider}|{streamdetails.item_id}" in self._selected_sources()
+        loaded = {provider.instance_id for provider in list(self.mass.providers)}
+        match = selected_match(
+            self._selected_sources(), streamdetails.provider, streamdetails.item_id, loaded
+        )
+        if match is not None and match != source_key(streamdetails.provider, streamdetails.item_id):
+            self.logger.info(
+                "Recognizing live source %s|%s: selected earlier as %s (that provider is gone, "
+                "e.g. Sendspin Source merged into Sendspin); re-select it in this provider's "
+                "settings to make this permanent",
+                streamdetails.provider,
+                streamdetails.item_id,
+                match,
+            )
+        return match is not None
 
     async def _start_analysis(
         self, session_id: str, streamdetails: StreamDetails, audio_format: AudioFormat

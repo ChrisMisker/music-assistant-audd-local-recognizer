@@ -22,6 +22,10 @@ wrong name (as long as AudD reports the track length, which it usually does).
 
 ### ⚠️ Worth knowing
 
+- **Music Assistant moved the Sendspin input** from the separate *Sendspin Source* plugin into the
+  Sendspin provider (Nightly of 2026-11-19 and later). A turntable you selected under the old
+  plugin keeps being recognized; re-select it once under *Audio sources to recognize* to make that
+  permanent, and check that *Allow analysis of the audio input* is still on for that input.
 - Tracks learned before this version have no stored length yet. They get one the next time AudD
   identifies them; until then a local recognition of such a track has no end guard.
 

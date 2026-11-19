@@ -41,7 +41,7 @@ All changes: [CHANGELOG.md](CHANGELOG.md) and the
 
 ## How it works
 
-1. You play a record through a live source in Music Assistant (for example **Sendspin Source**).
+1. You play a record through a live source in Music Assistant (for example the line-in of a **Sendspin** device).
 2. The provider listens to that live audio. Silence between tracks marks a track change.
 3. For each new track it first checks its **local fingerprint database**. A track it has heard
    before is recognized locally: no internet, no cost.
@@ -87,8 +87,8 @@ about 15–20 seconds, for free.** These figures will be updated as more records
 
 - **Music Assistant Nightly** (2.11 development builds from November 2026 or later). **For now
   this is required:** analysing live audio sources is not in a stable or beta release yet.
-- A **live audio source that allows audio analysis**, for example *Sendspin Source* or
-  *VBAN Receiver*.
+- A **live audio source that allows audio analysis**, for example the line-in of a
+  *Sendspin* device (the separate *Sendspin Source* plugin in older Nightlies) or *VBAN Receiver*.
 - An **AudD API token**, needed to identify music that hasn't been learned yet (see below).
 
 ### About AudD: a paid service, with a free trial
