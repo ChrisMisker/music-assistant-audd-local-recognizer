@@ -45,6 +45,10 @@ wrong name (as long as AudD reports the track length, which it usually does).
   of digital silence in the middle of a track (a stream hiccup, not the record). That used to end
   the track and start recognition again; now it is ignored (log: `Stream dropout: … ignored`).
   Longer digital silence (over 10 seconds, e.g. the source stopped) still ends the track.
+- **No stale title:** when a new track starts and is not recognized at the first check (after
+  12 seconds), Music Assistant no longer keeps showing the previous track (with a finished progress
+  bar) but shows your source again until the new track is recognized. During silence between
+  tracks the last title stays, as before.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

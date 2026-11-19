@@ -82,6 +82,10 @@ DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
 # preamp hiss sit around -55..-80 dBFS), so such a run does not count as a gap: the passage
 # continues. Only a longer run (the source stopped sending audio) becomes a gap.
 DROPOUT_MAX_SECONDS = 10.0
+# Published instead of a track when the shown track has clearly ended: a new passage plays and its
+# first lookup did not identify it (user's wish 2026-11-19; during a gap the last track stays).
+# The provider reports the source's own placeholder metadata for it.
+PLACEHOLDER = "placeholder"
 # A track recognized locally without a stored length gets one extra AudD request (from
 # AUDD_FIRST_ATTEMPT_SECONDS into the passage, at most this many per passage) just to learn its
 # length and the song position (user's choice, 2026-11-19: the extra requests are fine). Only a
@@ -479,6 +483,7 @@ class RecognitionEngine:
         self.audd_thorough = audd_thorough
         self.soft_boundaries = 0
         self.dropout_seconds = 0.0
+        self.shown_passage_id: str | None = None  # passage whose track MA shows
         self.background: set[asyncio.Task[None]] = set()
         self.frame_seconds = frame_seconds
         self._publish = publish
@@ -676,6 +681,8 @@ class RecognitionEngine:
                 return
             if not self._postpone_audd(passage):
                 await self._recognize_with_audd(passage, pcm, query, window_end)
+            if self._is_current(passage) and not passage.identified:
+                self._clear_stale_track(passage)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -994,9 +1001,24 @@ class RecognitionEngine:
         self._set_track_timing(passage, song_start_at, duration)
         passage.song_start_exact = song_start_exact and song_start_at is not None
         if self._publish(self._report(passage, metadata)):
+            self.shown_passage_id = passage.id
             self.logger.info("Reported stream metadata: %s", describe(metadata))
         else:
             # MA declined: the source has metadata of its own, or the session is gone.
+            self.logger.info("Music Assistant declined our metadata; recognition stopped")
+            self.stopped = True
+
+    def _clear_stale_track(self, passage: Passage) -> None:
+        """Stop showing an earlier passage's track once this passage is clearly something else."""
+        if self.shown_passage_id is None or self.shown_passage_id == passage.id:
+            return
+        self.shown_passage_id = None
+        if self._publish({PLACEHOLDER: True}):
+            self.logger.info(
+                "No longer showing the previous track: passage %s is not identified yet",
+                passage.short_id,
+            )
+        else:
             self.logger.info("Music Assistant declined our metadata; recognition stopped")
             self.stopped = True
 

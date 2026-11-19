@@ -967,3 +967,28 @@ async def test_a_local_hit_uses_the_stored_song_start_of_its_reference(
     assert messages(caplog, "Identified Artist 2 - Song 2 via local")
     # without the stored start of the reference play this would say "song started at 5s"
     assert messages(caplog, "Expected end of Artist 2 - Song 2 at 100s (song started at 0s")
+
+
+# ---------------------------------------------------------------- withdrawing the shown track
+
+
+async def test_an_unknown_next_track_withdraws_the_shown_one(make_harness: Any) -> None:
+    """After a track, an unidentified passage replaces it with the source placeholder."""
+    h = make_harness(audd_known={1})
+    await h.play(1, 40)
+    await h.quiet(GAP)
+    assert h.cleared == 0  # during the gap the last track stays
+    await h.play(9, 30)  # unknown: the first lookup at 12 s does not identify it
+    assert h.cleared == 1
+    assert [m["title"] for m in h.published] == ["Song 1"]
+
+
+async def test_a_quickly_recognized_next_track_switches_directly(make_harness: Any) -> None:
+    h = make_harness(durations={1: 600, 2: 600})
+    await h.play(1, 40)
+    await h.quiet(GAP)
+    await h.play(2, 40)
+    await h.quiet(GAP)
+    await h.play(1, 30)  # known: recognized at the first lookup, no placeholder in between
+    assert h.cleared == 1  # only once: when song 2 was still unknown (first play)
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 2", "Song 1"]

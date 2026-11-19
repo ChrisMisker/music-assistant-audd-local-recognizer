@@ -23,7 +23,7 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from .audd_client import AudDClient, redirects_to_placeholder
 from .database import DB_FILENAME, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
-from .engine import GapSettings, RecognitionEngine
+from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
 from .recording import FLUSH_SECONDS, MAX_RECORDING_SECONDS, InputRecorder, SessionLog
 from .sources import selected_match, source_key
@@ -88,6 +88,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         """Initialize provider state (the database opens in handle_async_init)."""
         super().__init__(mass, manifest, config, supported_features)
         self._engines: dict[str, RecognitionEngine] = {}
+        # the source's own metadata at session start: shown again when our track has ended
+        self._placeholders: dict[str, StreamMetadata | None] = {}
         self._recorders: dict[str, tuple[InputRecorder, asyncio.Lock]] = {}
         self._session_logs: dict[str, SessionLog] = {}
 
@@ -421,6 +423,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self._speed_correction(),
             "on" if self._fast_start() else "off",
         )
+        self._placeholders[session_id] = streamdetails.stream_metadata
         self._engines[session_id] = RecognitionEngine(
             fmt=fmt,
             gap_settings=GapSettings(float(silence), float(resume), float(min_gap)),
@@ -510,6 +513,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     def _publish(self, session_id: str, metadata: dict[str, Any]) -> bool:
         # Newer MA returns bool (False = stop recognizing); slightly older Nightlies
         # (e.g. the one this was first tested on) return None. Only False is a refusal.
+        if metadata.get(PLACEHOLDER):
+            # MA has no public way to withdraw reported metadata mid-session: show the
+            # source's own placeholder again (what MA showed before anything was recognized).
+            placeholder = self._placeholders.get(session_id) or StreamMetadata(
+                title="Unknown track"
+            )
+            return self.report_stream_metadata(session_id, placeholder) is not False
         accepted = self.report_stream_metadata(
             session_id,
             StreamMetadata(
@@ -554,6 +564,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def cancel(self, session_id: str) -> None:
         """End a live session and drop its in-memory state (the DB is untouched)."""
+        self._placeholders.pop(session_id, None)
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
             self.logger.info("Analysis ended: session=%s", session_id)
@@ -562,6 +573,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
         """Live sources are never finalized; nothing is stored in MA either way."""
+        self._placeholders.pop(session_id, None)
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
         await self._stop_recording(session_id)

@@ -73,6 +73,7 @@ class Harness:
     windows: list[list[int]] = field(default_factory=list)
     audd_calls: list[list[int]] = field(default_factory=list)
     published: list[dict[str, Any]] = field(default_factory=list)
+    cleared: int = 0  # placeholder reports (the shown track was withdrawn)
     # songs AudD knows; None entries in audd_script force a no-match for that call
     audd_known: set[int] = field(default_factory=lambda: {1, 2, 3, 4})
     # track durations (seconds) AudD reports; a song listed here also gets a timecode: the song
@@ -165,7 +166,10 @@ class Harness:
         return metadata
 
     def _publish(self, metadata: dict[str, Any]) -> bool:
-        self.published.append(metadata)
+        if metadata.get("placeholder"):
+            self.cleared += 1
+        else:
+            self.published.append(metadata)
         return self.publish_result
 
     async def settle(self) -> None:
