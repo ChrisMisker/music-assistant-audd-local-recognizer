@@ -49,7 +49,8 @@ sys.path.insert(0, str(ROOT))
 from vote_report import parse  # noqa: E402
 
 DEFAULT_RECORDINGS = ROOT / "debug-recordings"
-REPLAY_OPTIONS = ["--oracle", "--postpone-audd", "--fast-start", "30"]
+REPLAY_OPTIONS = ["--oracle", "--postpone-audd"]
+FAST_START_SECONDS = 30  # as shipped (setting on by default)
 ONE_THREAD = dict.fromkeys(
     ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1"
 )
@@ -193,9 +194,16 @@ def summarize(lines: list[str], truth: Any, same: Any = None) -> list[PassageRes
     return results
 
 
-def replay(folder: Path) -> FolderResult:
+def replay(folder: Path, fast_start: float = FAST_START_SECONDS) -> FolderResult:
     """Replay one folder at low priority and summarize it."""
-    command = [sys.executable, str(SCRIPTS / "replay_recording.py"), str(folder), *REPLAY_OPTIONS]
+    command = [
+        sys.executable,
+        str(SCRIPTS / "replay_recording.py"),
+        str(folder),
+        *REPLAY_OPTIONS,
+        "--fast-start",
+        f"{fast_start:g}",
+    ]
     if shutil.which("caffeinate"):
         command = ["caffeinate", "-i", *command]  # keep macOS awake while this replay runs
     began = time.monotonic()
@@ -326,24 +334,36 @@ def main() -> None:
     parser.add_argument("--only", help="only folders whose name contains this text")
     parser.add_argument("--jobs", type=int, default=6, help="replays at the same time (default 6)")
     parser.add_argument("--baseline", type=Path, help="run to compare with (default: the last)")
+    parser.add_argument(
+        "--fast-start",
+        type=float,
+        default=FAST_START_SECONDS,
+        metavar="SECONDS",
+        help=f"experiment: fast start window (default {FAST_START_SECONDS}, 0 = off); a run with "
+        "another value is saved with a tag and never becomes the default baseline",
+    )
     args = parser.parse_args()
+    tag = "" if args.fast_start == FAST_START_SECONDS else f"-fs{args.fast_start:g}"
 
     folders = recording_folders(args.recordings, args.only)
     if not folders:
         sys.exit(f"no recordings in {args.recordings}")
     runs = args.recordings / "regression"
-    previous = sorted(runs.glob("*.json")) if runs.exists() else []
+    previous = (
+        sorted(p for p in runs.glob("*.json") if "-fs" not in p.stem) if runs.exists() else []
+    )
     baseline_path = args.baseline or (previous[-1] if previous else None)
     baseline = load(baseline_path) if baseline_path else None
 
     print(f"Replaying {len(folders)} folders, {args.jobs} at a time, at low priority…", flush=True)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        replayed = dict(zip(folders, pool.map(replay, folders), strict=True))
+        jobs = pool.map(lambda folder: replay(folder, args.fast_start), folders)
+        replayed = dict(zip(folders, jobs, strict=True))
     results = {folder.name: replayed[folder] for folder in folders}
     commit = _commit()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 - local file name
-    saved = runs / f"{stamp}-{commit}.json"
+    saved = runs / f"{stamp}-{commit}{tag}.json"
     save(saved, results, commit)
 
     print(f"Done in {(time.monotonic() - began) / 60:.1f} min (commit {commit}).")
