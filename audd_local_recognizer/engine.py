@@ -941,7 +941,14 @@ class RecognitionEngine:
             passage.short_id,
         )
         hit = await self._try_audd(passage, pcm, window_end)
-        if hit is None or not self._is_current(passage) or passage.metadata is None:
+        if hit is None:
+            # The track is known already: retry soon, not at the slow cadence of later attempts
+            # to identify an unknown passage (the stream-wide minimum interval still applies).
+            passage.next_audd_at = min(
+                passage.next_audd_at, passage.seconds + AUDD_FAST_INTERVAL_SECONDS
+            )
+            return
+        if not self._is_current(passage) or passage.metadata is None:
             return
         passage.duration_checks_left = 0  # AudD answered: no further checks this passage
         known = {track_key(passage.metadata), *passage.metadata.get(ALIASES, [])}

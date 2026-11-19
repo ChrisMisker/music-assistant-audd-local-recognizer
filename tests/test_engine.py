@@ -867,3 +867,19 @@ async def test_the_length_check_ignores_another_name(
     assert messages(caplog, "AudD names it Someone - Else, not Artist 1 - Song 1")
     assert "duration_seconds" not in (h.db.track_metadata(1) or {})
     assert [m["title"] for m in h.published] == ["Song 1", "Song 1"]
+
+
+async def test_a_missed_length_request_is_retried_after_30s(
+    make_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when the passage is on the slow AudD cadence, the length retry is not 90 s away."""
+    monkeypatch.setattr(eng, "AUDD_FAST_ATTEMPTS", 0)  # every attempt would wait 90 s
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    h.durations[1] = 300
+    h.audd_script = [None]  # the first length request misses
+    calls = len(h.audd_calls)
+    await h.play(1, 80)
+    assert len(h.audd_calls) == calls + 2  # the miss and a retry ~30 s later
+    assert (h.db.track_metadata(1) or {})["duration_seconds"] == 300
