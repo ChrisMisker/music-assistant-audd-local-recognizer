@@ -86,6 +86,9 @@ DROPOUT_MAX_SECONDS = 10.0
 # first lookup did not identify it (user's wish 2026-11-19; during a gap the last track stays).
 # The provider reports the source's own placeholder metadata for it.
 PLACEHOLDER = "placeholder"
+# A silence this long (the side or the record has ended) also withdraws the shown track; shorter
+# gaps between tracks keep it, so the title does not flicker.
+WITHDRAW_AFTER_SILENCE_SECONDS = 30.0
 # A track recognized locally without a stored length gets one extra AudD request (from
 # AUDD_FIRST_ATTEMPT_SECONDS into the passage, at most this many per passage) just to learn its
 # length and the song position (user's choice, 2026-11-19: the extra requests are fine). Only a
@@ -521,6 +524,12 @@ class RecognitionEngine:
         elif (passage := self.passage) is not None and self._past_track_end(passage):
             self._end_at_track_end(passage)
         if self.passage is None:
+            if (
+                self.shown_passage_id is not None
+                and self.gap.in_gap
+                and self.gap.silence_seconds >= WITHDRAW_AFTER_SILENCE_SECONDS
+            ):
+                self._withdraw_shown_track(f"{WITHDRAW_AFTER_SILENCE_SECONDS:.0f}s of silence")
             return  # inside a gap: no buffering, fingerprinting, matching or AudD
         self.passage.append(chunk, chunk_seconds)
         self._schedule(self.passage)
@@ -1012,12 +1021,13 @@ class RecognitionEngine:
         """Stop showing an earlier passage's track once this passage is clearly something else."""
         if self.shown_passage_id is None or self.shown_passage_id == passage.id:
             return
+        self._withdraw_shown_track(f"passage {passage.short_id} is not identified yet")
+
+    def _withdraw_shown_track(self, reason: str) -> None:
+        """Report the source placeholder instead of the track shown so far."""
         self.shown_passage_id = None
         if self._publish({PLACEHOLDER: True}):
-            self.logger.info(
-                "No longer showing the previous track: passage %s is not identified yet",
-                passage.short_id,
-            )
+            self.logger.info("No longer showing the previous track: %s", reason)
         else:
             self.logger.info("Music Assistant declined our metadata; recognition stopped")
             self.stopped = True

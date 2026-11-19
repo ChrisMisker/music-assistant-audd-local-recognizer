@@ -992,3 +992,15 @@ async def test_a_quickly_recognized_next_track_switches_directly(make_harness: A
     await h.play(1, 30)  # known: recognized at the first lookup, no placeholder in between
     assert h.cleared == 1  # only once: when song 2 was still unknown (first play)
     assert [m["title"] for m in h.published] == ["Song 1", "Song 2", "Song 1"]
+
+
+async def test_a_long_silence_withdraws_the_shown_track(make_harness: Any) -> None:
+    """The record has ended: after 30 s of silence MA shows the source again."""
+    h = make_harness()
+    await h.play(1, 40)
+    await h.quiet(GAP)
+    assert h.cleared == 0  # a short gap between tracks keeps the title
+    await h.quiet(int(eng.WITHDRAW_AFTER_SILENCE_SECONDS))
+    assert h.cleared == 1
+    await h.quiet(60)
+    assert h.cleared == 1  # withdrawn once
