@@ -11,6 +11,9 @@
 
 source "$(dirname "$0")/_common.sh"
 
+# keep the confirmation input for read; ssh calls below must not swallow it
+exec 3<&0 0</dev/null
+
 resolve_container
 resolve_runtime
 DB="$MA_DATA_DIR/$PACKAGE/fingerprints.sqlite3"
@@ -53,7 +56,7 @@ shown="$(describe_tracks "$KEEP" "$DROP")"
 printf '%s\n' "$shown"
 [[ "$(wc -l <<<"$shown")" -eq 3 ]] || die "track $KEEP or $DROP does not exist"
 
-read -r -p "Type MERGE to merge track $DROP into track $KEEP: " answer
+read -r -u 3 -p "Type MERGE to merge track $DROP into track $KEEP: " answer
 [[ "$answer" == "MERGE" ]] || die "aborted, nothing changed"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
