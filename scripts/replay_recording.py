@@ -212,6 +212,20 @@ async def _replay(
     engine.close()
 
 
+def override_engine_constant(assignment: str) -> None:
+    """Apply NAME=VALUE to an existing upper-case engine constant (for experiments)."""
+    from audd_local_recognizer import engine  # noqa: PLC0415
+
+    name, _, value = assignment.partition("=")
+    constants = vars(engine)
+    if not name.isupper() or name not in constants or not value:
+        sys.exit(f"--set {assignment}: not an engine constant (NAME=VALUE)")
+    current = constants[name]
+    if isinstance(current, bool) or not isinstance(current, int | float):
+        sys.exit(f"--set {assignment}: {name} is not a number")
+    constants[name] = type(current)(float(value)) if isinstance(current, int) else float(value)
+
+
 def main() -> None:
     """Replay every recording session in the folder."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -262,7 +276,17 @@ def main() -> None:
         "removed from the temporary copy: they come from this very audio and would let the "
         "replay recognize itself)",
     )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="experiment: override an engine constant, e.g. --set CONFIRM_COHERENT_VOTES=0 "
+        "(repeatable; the value gets the constant's own type)",
+    )
     args = parser.parse_args()
+    for assignment in args.set:
+        override_engine_constant(assignment)
     if args.density_divisor:
         from audd_local_recognizer import engine  # noqa: PLC0415
 

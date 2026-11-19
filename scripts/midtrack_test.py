@@ -52,6 +52,7 @@ from replay_recording import (  # noqa: E402
     _replay,
     _segment_chunks,
     _segment_format,
+    override_engine_constant,
 )
 
 from audd_local_recognizer.database import FingerprintDatabase  # noqa: E402
@@ -153,9 +154,13 @@ def _thin(db_path: Path, divisor: int) -> None:
         conn.execute("DELETE FROM landmarks WHERE bucket(fingerprint_hash) % ? != 0", (divisor,))
 
 
-def run_case(case: Case, listen: int, divisor: int | None) -> dict[str, object]:
+def run_case(
+    case: Case, listen: int, divisor: int | None, overrides: tuple[str, ...] = ()
+) -> dict[str, object]:
     """Replay one needle drop and return what happened."""
     os.nice(15)
+    for assignment in overrides:
+        override_engine_constant(assignment)
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         wav = _cut(case, listen, tmp)
@@ -203,6 +208,9 @@ def main() -> None:
     parser.add_argument("--listen", type=int, default=60, help="seconds after the drop")
     parser.add_argument("--density-divisor", type=int, help="thin the DB and lookups to 1/N")
     parser.add_argument("--jobs", type=int, default=6)
+    parser.add_argument(
+        "--set", action="append", default=[], metavar="NAME=VALUE", help="engine constant"
+    )
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     cases = [c for folder in args.folders for c in _cases(folder, args.drops, args.listen, rng)]
@@ -210,10 +218,14 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
         results = list(
             pool.map(
-                run_case, cases, [args.listen] * len(cases), [args.density_divisor] * len(cases)
+                run_case,
+                cases,
+                [args.listen] * len(cases),
+                [args.density_divisor] * len(cases),
+                [tuple(args.set)] * len(cases),
             )
         )
-    hits = 0
+    hits = wrong = uncertain = close = far = 0
     for case, r in zip(cases, results, strict=True):
         same = _same_track(case.folder)
         ok = r["found"] is not None and same(str(r["found"]), case.title)
@@ -221,9 +233,16 @@ def main() -> None:
         if r["found"] is None:
             outcome = "not recognized"
         elif not ok:
+            wrong += 1
             outcome = f"WRONG: {r['found']}"
         else:
             err = r["position_error"]
+            if r["uncertain"] or err is None:
+                uncertain += 1
+            elif abs(float(str(err))) <= 5:
+                close += 1
+            else:
+                far += 1
             where = (
                 "position uncertain → start 0" if r["uncertain"] else f"position off {err:+.0f}s"
             )
@@ -232,6 +251,10 @@ def main() -> None:
     times = sorted(int(str(r["after"])) for r in results if r["after"] is not None)
     median = times[len(times) // 2] if times else None
     print(f"\nrecognized {hits}/{len(cases)}, median {median}s after the drop")
+    print(
+        f"summary: drops={len(cases)} recognized={hits} wrong={wrong} median={median} "
+        f"position_close={close} position_far={far} position_uncertain={uncertain}"
+    )
 
 
 if __name__ == "__main__":

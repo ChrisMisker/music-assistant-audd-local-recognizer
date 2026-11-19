@@ -823,7 +823,10 @@ class RecognitionEngine:
         else:
             decision = passage.confirmer.consider(candidate)
             coherence = passage.evidence.best(candidate.track_id)
-            if decision is Decision.ACCEPT_CONFIRMED and (
+            if (
+                decision is Decision.ACCEPT_CONFIRMED
+                and CONFIRM_COHERENT_VOTES > 0  # 0 switches the rule off (experiments)
+            ) and (
                 coherence is None
                 or coherence.votes < CONFIRM_COHERENT_VOTES
                 or coherence.lookups < CONFIRMATIONS_REQUIRED
