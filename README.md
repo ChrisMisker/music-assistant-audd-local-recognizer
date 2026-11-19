@@ -267,6 +267,11 @@ the audio input, or in the VBAN Receiver settings; on by default), that your sou
 in this provider's settings, and that music is above the silence threshold (the `audio resumed at … dBFS`
 log line shows the level).
 
+If recognition is suddenly slow (AudD only after 40 s or more, few `LOCAL` lines), check whether
+your Home Assistant host is busy: another add-on compiling or updating (ESPHome firmware
+updates, for example) or a full memory/swap slows down the fingerprinting, which runs at low
+priority so that playback never suffers. It recovers by itself once the host is quiet again.
+
 ## Licence
 
 [Apache License 2.0](LICENSE), the same licence as Music Assistant.
