@@ -88,3 +88,34 @@ def test_oracle_answers_with_timecode_and_duration_from_a_session_log(tmp_path: 
     assert answer["audd_timecode"] == "01:30"
     assert answer["duration_seconds"] == 200.0
     assert oracle.answer(datetime(2026, 11, 18, 7, 0, 0)) is None  # noqa: DTZ001
+
+
+def test_oracle_uses_the_logged_song_start_and_the_stream_start(tmp_path: Path) -> None:
+    """A song that began before its passage, and a passage started before the log did."""
+    log = tmp_path / "20261119-111840.log"
+    prefix = "INFO (MainThread) [music_assistant.audd_local_recognizer]"
+    log.write_text(
+        f"2026-11-19 11:18:40.000 {prefix} Recording the input of session s to /data "
+        "(300 of 300 minutes left); provider v0.9, source 48000Hz/2ch/f32le, "
+        "speed correction -2.0%, fast start on\n"
+        f"2026-11-19 11:19:10.000 {prefix} Identified A - One via AudD after 29s "
+        "(passage aaaaaaaa, AudD calls 1)\n"
+        f"2026-11-19 11:22:00.000 {prefix} Track boundary (no gap): A - One should have ended "
+        "at 175s; passage aaaaaaaa closed after 180s\n"
+        f"2026-11-19 11:22:00.000 {prefix} Passage bbbbbbbb started (no gap)\n"
+        f"2026-11-19 11:22:27.000 {prefix} Identified A - Two via AudD after 27s "
+        "(passage bbbbbbbb, AudD calls 1)\n"
+        f"2026-11-19 11:22:27.001 {prefix} Expected end of A - Two at 271s (song started at "
+        "-98s, duration 557s) (passage bbbbbbbb)\n",
+        encoding="utf-8",
+    )
+    oracle = _replay_module().Oracle(log)
+    first = oracle.answer(datetime(2026, 11, 19, 11, 19, 10))  # noqa: DTZ001 - log clock
+    assert first is not None
+    assert first["title"] == "One"
+    assert first["audd_timecode"] == "00:31"  # 30 s since the log began, / 0.98
+    second = oracle.answer(datetime(2026, 11, 19, 11, 22, 27))  # noqa: DTZ001
+    assert second is not None
+    assert second["title"] == "Two"
+    assert second["audd_timecode"] == "02:08"  # (27 + 98) s / 0.98 = 127.6 s
+    assert second["duration_seconds"] == 557.0

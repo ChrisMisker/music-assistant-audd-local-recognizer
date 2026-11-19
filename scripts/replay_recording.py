@@ -9,8 +9,12 @@ measures local recognition only: tracks that are not in the database stay uniden
 With --oracle, a "perfect AudD" answers every AudD attempt with the track that really played at
 that moment, taken from each session's own log next to its recording (`<start>.log`, written by
 the provider since 0.9; or --oracle MA_LOG for an exported Music Assistant log). It also answers
-with a timecode (the time since that passage started) and the track length when the log has one
-(`Expected end of ... duration Ns`), so the gapless guard works offline too. The replay then learns a first play just like live, and a second play
+with the track length and a timecode from the log's `Expected end of ... (song started at Xs,
+duration Ns) (passage P)` line: the song position as live AudD saw it (song start = passage start
++ X, converted with the logged speed correction), so the gapless guard and the self-correction
+work offline too. Without that line the timecode is the time since the passage started. A
+passage that started just before the session log did (the stream start) begins at the log's
+first line. The replay then learns a first play just like live, and a second play
 shows how many AudD calls local recognition still leaves (ideally none). Segments may be WAV or FLAC
 (`scripts/fetch-recordings.sh` stores FLAC). Every segment group (one recording session) is fed as one continuous stream, in 1-second chunks, waiting for each
 lookup to finish (ideal timing). Log lines use the recording's own clock, in the same format as
@@ -87,23 +91,37 @@ class Oracle:
     """What really played when, from the live MA log: "Identified A - T via ... (passage P"."""
 
     def __init__(self, log: Path) -> None:
-        """Parse passage start/end times and the identified track of each passage."""
+        """Parse passage start/end times, song starts and the identified track of each passage."""
         starts: dict[str, datetime] = {}
         ends: dict[str, datetime] = {}
         titles: dict[str, str] = {}
+        song_offsets: dict[str, float] = {}
         self.durations: dict[str, float] = {}
+        self.speed_factor = 1.0
+        first: datetime | None = None
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
             if not (stamp := _LOG_TIME.match(line)):
                 continue
             when = datetime.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+            first = first or when
+            if speed := re.search(r"speed correction (-?\d+(?:\.\d+)?)%", line):
+                self.speed_factor = 1 + float(speed.group(1)) / 100
             if started := re.search(r"Passage (\w{8}) started", line):
                 starts[started.group(1)] = when
             elif closed := re.search(r"passage (\w{8}) closed after", line):
                 ends[closed.group(1)] = when
             elif found := re.search(r"Identified (.+?) via \w+ after \d+s \(passage (\w{8})", line):
                 titles[found.group(2)] = found.group(1)
-            elif length := re.search(r"Expected end of (.+?) at .*, duration (\d+)s\)", line):
-                self.durations[length.group(1)] = float(length.group(2))
+                if found.group(2) not in starts and first is not None and not starts:
+                    starts[found.group(2)] = first  # its start line came before the log began
+            elif length := re.search(
+                r"Expected end of (.+?) at .*?(?:\(song started at (-?\d+)s, )?"
+                r"duration (\d+)s\)(?: \(passage (\w{8})\))?",
+                line,
+            ):
+                self.durations[length.group(1)] = float(length.group(3))
+                if length.group(2) is not None and length.group(4) is not None:
+                    song_offsets[length.group(4)] = float(length.group(2))
         ordered = sorted(starts.items(), key=lambda item: item[1])
         next_start = {
             passage: ordered[i + 1][1] if i + 1 < len(ordered) else start + timedelta(hours=1)
@@ -114,6 +132,11 @@ class Oracle:
             for p in titles
             if p in starts
         )
+        self.song_starts = {
+            starts[p]: starts[p] + timedelta(seconds=song_offsets.get(p, 0.0))
+            for p in titles
+            if p in starts
+        }
 
     def track_at(self, when: datetime) -> str | None:
         """Return "Artist - Title" playing at that moment (a few seconds of slack)."""
@@ -134,7 +157,8 @@ class Oracle:
             return None
         start, label = found
         metadata = _metadata(label)
-        position = max(0, int((when - start).total_seconds()))
+        song_start = self.song_starts.get(start, start)
+        position = max(0, round((when - song_start).total_seconds() / self.speed_factor))
         metadata["audd_timecode"] = f"{position // 60:02d}:{position % 60:02d}"
         metadata["duration_seconds"] = self.durations.get(label)
         return metadata
