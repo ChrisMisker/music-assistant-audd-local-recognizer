@@ -300,3 +300,42 @@ def test_artwork_listing_and_conditional_clear(db_path: Path) -> None:
     stored = db.track_metadata(a)
     assert stored is not None
     assert stored["artwork"] is None
+
+
+def test_merge_tracks_moves_references_and_keeps_an_alias(db_path: Path) -> None:
+    """One recording named in two ways becomes one track; the other name keeps landing on it."""
+    db = FingerprintDatabase(db_path)
+    orchestra = {"artist": "The Love Unlimited Orchestra", "title": "Satin Soul", "album": "Gold"}
+    barry = {
+        "artist": "Barry White",
+        "title": "Satin Soul",
+        "album": "White Gold",
+        "duration_seconds": 255.0,
+    }
+    keep = db.upsert_track(orchestra)
+    drop = db.upsert_track(barry)
+    db.add_reference(keep, "p1", 0.0, _landmarks(30))
+    db.add_reference(drop, "p2", 0.0, _landmarks(30, shift=5))
+    assert db.merge_tracks(keep, drop) == 1
+    merged = db.track_metadata(keep)
+    assert merged is not None
+    assert (merged["artist"], merged["album"]) == ("The Love Unlimited Orchestra", "Gold")
+    assert merged["duration_seconds"] == 255.0  # filled from the dropped track
+    assert merged["aliases"] == [track_key(barry)]
+    assert db.track_metadata(drop) is None
+    assert db.stats().references == 2
+    # AudD names it "Barry White" again: no duplicate, the kept track answers
+    assert db.upsert_track(barry) == keep
+    assert db.stats().tracks == 1
+    match = db.find_best_match(_landmarks(30, shift=5))
+    assert match is not None
+    assert match[1]["artist"] == "The Love Unlimited Orchestra"
+
+
+def test_merge_tracks_rejects_unknown_or_identical_ids(db_path: Path) -> None:
+    db = FingerprintDatabase(db_path)
+    track = db.upsert_track(META)
+    with pytest.raises(ValueError, match="itself"):
+        db.merge_tracks(track, track)
+    with pytest.raises(KeyError, match="unknown"):
+        db.merge_tracks(track, 999)
