@@ -212,6 +212,13 @@ def main() -> None:
         help="engine option: denser fingerprints for windows ending within SECONDS (e.g. 30)",
     )
     parser.add_argument(
+        "--lookup-phases",
+        type=int,
+        default=1,
+        metavar="N",
+        help="engine option: repeat each lookup at N sub-frame offsets (1 = off)",
+    )
+    parser.add_argument(
         "--keep-later-references",
         action="store_true",
         help="keep references learned at/after the recording started (by default they are "
@@ -251,7 +258,11 @@ def main() -> None:
                         file=sys.stderr,
                     )
             oracle = _oracle(args.oracle, args.folder, started)
-            options = {"postpone_audd": args.postpone_audd, "fast_start_seconds": args.fast_start}
+            options = {
+                "postpone_audd": args.postpone_audd,
+                "fast_start_seconds": args.fast_start,
+                "lookup_phases": args.lookup_phases,
+            }
             asyncio.run(_replay(group_files, FingerprintDatabase(db_path), clock, oracle, options))
     lines = stream.lines
     print(f"Replayed {len(files)} segments in {time.monotonic() - began:.0f}s", file=sys.stderr)

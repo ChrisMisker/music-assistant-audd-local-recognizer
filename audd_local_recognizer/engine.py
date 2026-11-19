@@ -267,9 +267,17 @@ class TimelineEvidence:
         # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there
         self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
 
-    def add(self, query: Fingerprints, rows: list[MatchRow], query_start_seconds: float) -> None:
-        """Add one lookup: its query hashes and the stored rows sharing them."""
-        self.lookups += 1
+    def add(
+        self,
+        query: Fingerprints,
+        rows: list[MatchRow],
+        query_start_seconds: float,
+        *,
+        new_lookup: bool = True,
+    ) -> None:
+        """Add one lookup (or, with new_lookup=False, another phase of the same lookup)."""
+        if new_lookup or self.lookups == 0:
+            self.lookups += 1
         for row in rows:
             for query_position in query.get(row.fingerprint_hash, ()):
                 shift = (
@@ -401,6 +409,7 @@ class RecognitionEngine:
         postpone_audd: bool = True,
         fast_start_seconds: float = 0.0,
         frame_seconds: float = PANAKO_FRAME_SECONDS,
+        lookup_phases: int = 1,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -412,6 +421,7 @@ class RecognitionEngine:
         self.audd_speed_percent = audd_speed_percent
         self.postpone_audd = postpone_audd
         self.fast_start_seconds = fast_start_seconds
+        self.lookup_phases = max(1, lookup_phases)
         self.frame_seconds = frame_seconds
         self._publish = publish
         self._spawn = spawn
@@ -559,6 +569,9 @@ class RecognitionEngine:
             if not self._is_current(passage):
                 return
             passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
+            local = await self._other_phases(passage, pcm, window_end, local)
+            if local is None:
+                return
             if await self._judge_local(passage, local):
                 await self._store_early_windows(passage)
                 return
@@ -568,6 +581,37 @@ class RecognitionEngine:
             raise
         except Exception:
             self.logger.exception("Recognition failed (passage %s)", passage.short_id)
+
+    async def _other_phases(
+        self, passage: Passage, pcm: bytes, window_end: float, local: LocalLookup
+    ) -> LocalLookup | None:
+        """
+        Look up the same window at other sub-frame offsets; return the strongest result.
+
+        Panako hashes depend on where the audio falls on the 2048-sample frame grid: half a
+        frame of offset keeps ~1 % of the hashes of identical audio. Two plays of a record land
+        at random offsets, so a lookup is repeated with the window shifted by k/phases of a frame
+        (k = 1..phases-1). All phases count as one lookup for the evidence; references are learned
+        from phase 0 only. Returns None if the passage changed meanwhile.
+        """
+        frame_bytes = self.fmt.channels * self.fmt.sample_width
+        hop_frames = self.frame_seconds * self.fmt.sample_rate
+        best = local
+        for k in range(1, self.lookup_phases):
+            skip = round(hop_frames * k / self.lookup_phases)
+            query = await self._fingerprint(pcm[skip * frame_bytes :], self._divisor(window_end))
+            if not self._is_current(passage):
+                return None
+            found = await self._run_blocking(self._db.lookup, query, passage.id)
+            if not self._is_current(passage):
+                return None
+            start = window_end - SAMPLE_SECONDS + skip / self.fmt.sample_rate
+            passage.evidence.add(query, found.rows, start, new_lookup=False)
+            if found.best is not None and (
+                best.best is None or found.best.best_votes > best.best.best_votes
+            ):
+                best = found
+        return best
 
     async def _recognize_with_audd(
         self, passage: Passage, pcm: bytes, query: Fingerprints, window_end: float
