@@ -135,6 +135,11 @@ STRONG_RATIO = 0.60
 CONFIRM_VOTES = 3
 CONFIRM_RATIO = 0.60
 CONFIRMATIONS_REQUIRED = 2
+# ...and together those windows must hold this many distinct hashes at one time shift (the
+# track's time-consistent cluster). A live false hit (2026-11-19: a Kurt Vile track identified as
+# a Barry White track) had 3 votes on two lookups but a cluster of only 3. Genuine confirmed hits
+# measured on all recordings: clusters of 6 and 7.
+CONFIRM_COHERENT_VOTES = 5
 # Time-consistent evidence: on a new play of a record only 2-4 votes per window repeat (vinyl
 # differs a little every play), so the votes of every lookup of a passage add up per (track,
 # reference passage), but only those at the same absolute time shift between this passage and the
@@ -158,6 +163,15 @@ COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 # 5-minute track keeps as many plays as a 3-minute one (a reference cap of 60 left long tracks
 # with a single play). Bounded by MAX_LEARN_SECONDS_PER_PASSAGE: ~1 MB per 3-minute track.
 MAX_PLAYS_PER_TRACK = 2
+# Where in the song a local match is. A loop-based track repeats itself, so a weak match can be
+# right about the track and wrong about the position (2026-11-19, Hard Day: song start -195 s
+# instead of +2 s, which gave a false soft boundary mid-song). A passage that began after a real
+# gap normally begins with its song: a weak position (fewer than RELIABLE_POSITION_VOTES in its
+# cluster) that puts the song start more than LOCAL_START_PRIOR_SECONDS before the passage start
+# is not trusted; the song is assumed to start with the passage (not exact: nothing is stored
+# or trimmed). Measured on 45 local hits of all recordings: genuine starts after a gap -9..+1 s.
+LOCAL_START_PRIOR_SECONDS = 15
+RELIABLE_POSITION_VOTES = 12
 # A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
 # far above that means abnormal input (noise, a broken source); it is not stored, so such a
 # source cannot blow up the database.
@@ -392,6 +406,7 @@ class Passage:
     duration_checks_left: int = 0
     song_start_exact: bool = False  # song_start_at from an AudD timecode or a stored song start
     follows: ClosedPlay | None = None  # the identified play this passage followed without a gap
+    after_gap: bool = False  # opened by audio resuming after a real gap
     settled: bool = False  # song start stored and the previous play corrected
 
     @property
@@ -533,7 +548,7 @@ class RecognitionEngine:
         if event is GapEvent.GAP:
             self._close_passage(level, chunk_seconds)
         elif event is GapEvent.RESUME:
-            self._open_passage(f"audio resumed at {level:.1f} dBFS")
+            self._open_passage(f"audio resumed at {level:.1f} dBFS").after_gap = True
         elif (passage := self.passage) is not None and self._past_track_end(passage):
             self._end_at_track_end(passage)
         if self.passage is None:
@@ -787,6 +802,15 @@ class RecognitionEngine:
         else:
             decision = passage.confirmer.consider(candidate)
             coherence = passage.evidence.best(candidate.track_id)
+            if decision is Decision.ACCEPT_CONFIRMED and (
+                coherence is None
+                or coherence.votes < CONFIRM_COHERENT_VOTES
+                or coherence.lookups < CONFIRMATIONS_REQUIRED
+            ):
+                # The windows agree on the track but not on the time shift: not yet one recording.
+                decision = Decision.PENDING
+                passage.confirmer.pending_track_id = candidate.track_id
+                passage.confirmer.pending_count = CONFIRMATIONS_REQUIRED - 1
             self.logger.info(
                 "LOCAL %s: %s votes=%d acc=%d ratio=%.3f shared=%d ref=%d offset=%+d "
                 "ref_passage=%s at=%.0fs -> %s (passage %s)",
@@ -804,7 +828,7 @@ class RecognitionEngine:
                 passage.short_id,
             )
             if decision.accepted:
-                start, exact = _local_song_start(metadata, coherence)
+                start, exact = self._local_song_start(passage, metadata, coherence)
                 self._identify(
                     passage,
                     candidate.track_id,
@@ -817,6 +841,29 @@ class RecognitionEngine:
                 await self._settle(passage)
                 return True
         return await self._judge_timeline(passage)
+
+    def _local_song_start(
+        self, passage: Passage, metadata: dict[str, Any], coherence: Coherence | None
+    ) -> tuple[float | None, bool]:
+        """Return (song start, exact?) for a local match, distrusting weak far positions."""
+        start, exact = _local_song_start(metadata, coherence)
+        if (
+            start is not None
+            and coherence is not None
+            and passage.after_gap
+            and start < -LOCAL_START_PRIOR_SECONDS
+            and coherence.votes < RELIABLE_POSITION_VOTES
+        ):
+            self.logger.info(
+                "Position of %s uncertain (song start %.0fs from %d votes) in a passage that "
+                "began after a gap: assuming the song started with it (passage %s)",
+                describe(metadata),
+                start,
+                coherence.votes,
+                passage.short_id,
+            )
+            return 0.0, False
+        return start, exact
 
     async def _judge_timeline(self, passage: Passage) -> bool:
         """Accept the strongest time-consistent cluster once it has enough evidence."""
@@ -844,7 +891,7 @@ class RecognitionEngine:
             Decision.ACCEPT_COHERENT.value,
             passage.short_id,
         )
-        start, exact = _local_song_start(metadata, coherence)
+        start, exact = self._local_song_start(passage, metadata, coherence)
         self._identify(
             passage,
             coherence.track_id,
@@ -1077,19 +1124,23 @@ class RecognitionEngine:
             passage.follows = None
             real_end = previous.closed_at + passage.song_start_at
             if passage.song_start_at < 0:
-                trimmed = await self._run_blocking(
-                    self._db.trim_passage,
+                # The previous play's windows past its real end hold this song: move them here.
+                moved, removed = await self._run_blocking(
+                    self._db.move_passage_tail,
                     previous.track_id,
                     previous.passage_id,
                     real_end,
                     float(SAMPLE_SECONDS),
+                    (passage.track_id, passage.id, previous.closed_at),
                 )
                 self.logger.info(
-                    "%s started %.0fs before the boundary: removed %d windows of the previous "
-                    "track learned past its real end (passage %s)",
+                    "%s started %.0fs before the boundary: of the previous track's windows "
+                    "past its real end, moved %d to this song and removed %d that held both "
+                    "(passage %s)",
                     describe(passage.metadata),
                     -passage.song_start_at,
-                    trimmed,
+                    moved,
+                    removed,
                     previous.passage_id[:8],
                 )
             if previous.song_start_at is not None and previous.song_start_exact:

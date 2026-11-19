@@ -550,17 +550,35 @@ class FingerprintDatabase:
 
         self._update_metadata(track_id, change)
 
-    def trim_passage(
-        self, track_id: int, passage_id: str, end_seconds: float, window_seconds: float
-    ) -> int:
-        """Delete a play's reference windows that reach past end_seconds; return how many."""
+    def move_passage_tail(
+        self,
+        track_id: int,
+        passage_id: str,
+        end_seconds: float,
+        window_seconds: float,
+        to: tuple[int, str, float],
+    ) -> tuple[int, int]:
+        """
+        Give the windows of a play that start at/after end_seconds to the song that followed.
+
+        They hold only that song's audio (it had started by then): `to` is (track id, passage
+        id, seconds to subtract from the offsets), so they join that play's timeline. Windows
+        that straddle end_seconds hold both songs and are deleted. Returns (moved, deleted).
+        """
+        new_track_id, new_passage_id, shift = to
         with self._transaction() as db:
-            cur = db.execute(
+            moved = db.execute(
+                "UPDATE reference_windows SET track_id=?, passage_id=?, "
+                "passage_offset_seconds = passage_offset_seconds - ? "
+                "WHERE track_id=? AND passage_id=? AND passage_offset_seconds >= ?",
+                (new_track_id, new_passage_id, shift, track_id, passage_id, end_seconds - 0.5),
+            ).rowcount
+            deleted = db.execute(
                 "DELETE FROM reference_windows WHERE track_id=? AND passage_id=? "
                 "AND passage_offset_seconds + ? > ?",
                 (track_id, passage_id, window_seconds, end_seconds + 0.5),
-            )
-            return int(cur.rowcount)
+            ).rowcount
+            return int(moved), int(deleted)
 
     def record_observed_duration(
         self, track_id: int, seconds: float, tolerance: float

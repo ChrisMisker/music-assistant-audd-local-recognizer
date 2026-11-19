@@ -50,6 +50,14 @@ wrong name (as long as AudD reports the track length, which it usually does).
   bar) but shows your source again until the new track is recognized. During a short silence
   between tracks the last title stays, as before; after 30 seconds of silence (the record has
   ended) your source is shown again too.
+- **Fewer wrong local matches and wrong ends:** a local recognition from two weak checks now also
+  needs both checks to point at the same moment in the earlier play (a Kurt Vile track was briefly
+  shown as a Barry White track). In a track that repeats itself (a loop-based song), a weak local
+  match can find the right track at the wrong spot; after a silence the provider now assumes the
+  song started there, instead of expecting its end minutes too early.
+- **Nothing good is thrown away in a correction:** when AudD first gives a part or another name
+  and later the real track, what was learned under the first name is now kept for the real track
+  instead of deleted, so the next play of it is recognized locally.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

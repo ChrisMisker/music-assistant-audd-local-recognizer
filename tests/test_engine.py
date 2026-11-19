@@ -1013,3 +1013,72 @@ async def test_a_long_silence_withdraws_the_shown_track(make_harness: Any) -> No
     assert h.cleared == 1
     await h.quiet(60)
     assert h.cleared == 1  # withdrawn once
+
+
+# ---------------------------------------------------------------- trusting a local position
+
+
+async def test_the_previous_plays_tail_moves_to_the_song_that_followed(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A misnamed or too-long play gives its windows of the next song to that song, not the bin."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 80, 2: 600})  # song 1 really lasts 60 s on this record
+    await h.play(1, 60)
+    await h.play(2, 60)  # no gap: song 2 starts at 60 s, the soft boundary comes at 85 s
+    assert messages(caplog, "Artist 2 - Song 2 started 25s before the boundary")
+    moved = messages(caplog, "moved ")
+    assert moved
+    assert "moved 0 " not in moved[0]
+    songs = {track: {song for song, _ in seconds} for track, seconds in learned(h).items()}
+    assert songs[1] == {1}
+    # song 2's first seconds were only heard before the soft boundary: they came with the move
+    assert min(second for song, second in learned(h)[2] if song == 2) < 25
+
+
+async def test_confirmed_needs_time_consistent_evidence(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two lookups with the same three hashes of a track are not yet one recording."""
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(9, 6)  # unknown audio...
+    await h.play(1, 3, start=10)  # ...with three seconds of song 1 inside both lookups
+    await h.play(9, 9, start=6)
+    await h.quiet(GAP)
+    assert messages(caplog, "LOCAL CANDIDATE: Artist 1 - Song 1 votes=3")
+    assert not [m for m in messages(caplog, "accepted (confirmed)") if "Song 1" in m]
+    assert len(h.audd_calls) == calls  # the passage ended before AudD was due
+
+
+async def test_a_weak_far_position_after_a_gap_is_not_trusted(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A passage after a gap starts with its song unless a strong match says otherwise."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300}, sparse_every=3)  # a new play: few votes per window
+    await h.play(1, 60, start=100)  # the stream starts mid-song: AudD puts the start at -100 s
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s")
+    await h.quiet(GAP)
+    await h.play(1, 30, start=100)  # the same stretch after a gap: a weak local position
+    assert messages(caplog, "Position of Artist 1 - Song 1 uncertain")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 300s (song started at 0s")
+
+
+async def test_a_strong_far_position_after_a_gap_is_trusted(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A needle dropped mid-track: a strong local match keeps its position."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 60, start=100)
+    await h.quiet(GAP)
+    await h.play(1, 30, start=100)
+    assert not messages(caplog, "uncertain")
+    assert (
+        len(messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s"))
+        == 2
+    )
