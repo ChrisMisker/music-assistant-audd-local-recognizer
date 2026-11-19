@@ -32,6 +32,7 @@ from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
 from .audd_client import AudDError, AudDNoMatch, parse_timecode
+from .database import ALIASES, track_key
 from .fingerprints import (
     DENSITY_DIVISOR,
     PANAKO_FRAME_SECONDS,
@@ -66,6 +67,11 @@ MAX_LEARN_SECONDS_PER_PASSAGE = 600
 # that check allows SONG_START_TOLERANCE_SECONDS for the timecode's 1 s resolution.
 TRACK_END_GUARD_SECONDS = 5
 SONG_START_TOLERANCE_SECONDS = 2
+# A track recognized locally without a stored length gets one extra AudD request (from
+# AUDD_FIRST_ATTEMPT_SECONDS into the passage, at most this many per passage) just to learn its
+# length and the song position (user's choice, 2026-11-19: the extra requests are fine). Only a
+# hit with the same track key (or alias) is used; another name is ignored (local wins).
+MAX_DURATION_CHECKS_PER_PASSAGE = 2
 # Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
 # the first ~2 minutes) and stored as references once the passage is identified, so the
 # start of a track is learned too even when identification only succeeds later.
@@ -329,6 +335,7 @@ class Passage:
     # passage time at which the identified song started (may be negative) and should end
     song_start_at: float | None = None
     track_end_at: float | None = None
+    duration_checks_left: int = 0
 
     @property
     def short_id(self) -> str:
@@ -351,6 +358,11 @@ class Passage:
         self.pcm.extend(chunk)
         if (excess := len(self.pcm) - self.window_bytes) > 0:
             del self.pcm[:excess]
+
+
+def _positive(value: Any) -> bool:
+    """Return whether value is a usable positive number (a duration)."""
+    return not isinstance(value, bool) and isinstance(value, int | float) and value > 0
 
 
 def describe(metadata: dict[str, Any] | None) -> str:
@@ -823,6 +835,8 @@ class RecognitionEngine:
         passage.confirmer.reset()
         passage.evidence.clear()  # not needed once identified
         passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
+        if via == "local" and not _positive(duration) and self._audd is not None:
+            passage.duration_checks_left = MAX_DURATION_CHECKS_PER_PASSAGE
         self._set_track_timing(passage, song_start_at, duration)
         if self._publish(self._report(passage, metadata)):
             self.logger.info("Reported stream metadata: %s", describe(metadata))
@@ -903,10 +917,71 @@ class RecognitionEngine:
         try:
             hashes = await self._fingerprint(pcm, self._divisor(window_end))
             await self._store_reference(passage, hashes, window_end)
+            if self._duration_check_due(passage, window_end):
+                await self._check_duration(passage, pcm, window_end)
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Could not learn window (passage %s)", passage.short_id)
+
+    def _duration_check_due(self, passage: Passage, window_end: float) -> bool:
+        return (
+            passage.duration_checks_left > 0
+            and window_end >= AUDD_FIRST_ATTEMPT_SECONDS
+            and self._is_current(passage)
+            and self._audd_wait_reason(passage) is None
+        )
+
+    async def _check_duration(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+        """Ask AudD once for the length of a locally recognized track that has none stored."""
+        passage.duration_checks_left -= 1
+        self.logger.info(
+            "Asking AudD for the length of %s (recognized locally) (passage %s)",
+            describe(passage.metadata),
+            passage.short_id,
+        )
+        hit = await self._try_audd(passage, pcm, window_end)
+        if hit is None or not self._is_current(passage) or passage.metadata is None:
+            return
+        passage.duration_checks_left = 0  # AudD answered: no further checks this passage
+        known = {track_key(passage.metadata), *passage.metadata.get(ALIASES, [])}
+        duration = hit.get("duration_seconds")
+        if track_key(hit) not in known:
+            self.logger.info(
+                "AudD names it %s, not %s: keeping the local recognition, length not stored "
+                "(passage %s)",
+                describe(hit),
+                describe(passage.metadata),
+                passage.short_id,
+            )
+            return
+        if not _positive(duration):
+            self.logger.info("AudD reports no length for %s", describe(passage.metadata))
+            return
+        track_id = passage.track_id
+        if track_id is None:
+            return
+        await self._run_blocking(self._db.upsert_track, hit)  # fills only empty fields
+        metadata = await self._run_blocking(self._db.track_metadata, track_id)
+        if metadata is None or not self._is_current(passage):
+            return
+        passage.metadata = metadata
+        self.logger.info(
+            "Learned the length of %s via AudD: %.0fs (passage %s)",
+            describe(metadata),
+            duration,
+            passage.short_id,
+        )
+        timecode = parse_timecode(hit.get("audd_timecode"))
+        song_start_at = (
+            window_end - timecode * self._speed_factor
+            if timecode is not None
+            else passage.song_start_at
+        )
+        self._set_track_timing(passage, song_start_at, duration)
+        if not self._publish(self._report(passage, metadata)):
+            self.logger.info("Music Assistant declined our metadata; recognition stopped")
+            self.stopped = True
 
     def _storable(self, passage: Passage, hashes: Fingerprints) -> bool:
         """Return False (and log) for a window too dense to be real music."""

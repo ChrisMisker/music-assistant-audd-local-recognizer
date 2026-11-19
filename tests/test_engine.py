@@ -205,11 +205,15 @@ async def test_c_previous_identity_never_blocks_next_track(make_harness: Any) ->
     assert len(h.audd_calls) == 3  # A, B miss, B hit
 
 
+# lengths AudD reports in tests that are not about the gapless guard (longer than any play)
+LONG = {1: 600, 2: 600, 3: 600}
+
+
 async def test_d_replay_in_same_stream_matches_earlier_passage(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
-    h = make_harness()
+    h = make_harness(durations=LONG)  # AudD reports lengths, so a replay needs no AudD at all
     await h.play(1, 60)
     passage_a = h.engine.passage.id
     await h.quiet(GAP)
@@ -224,11 +228,11 @@ async def test_d_replay_in_same_stream_matches_earlier_passage(
 
 
 async def test_e_persistence_across_restart(make_harness: Any) -> None:
-    first = make_harness()
+    first = make_harness(durations=LONG)
     await first.play(1, 60)
     first.engine.close()
     # new engine + new database object on the same file = MA restart
-    second = make_harness()
+    second = make_harness(durations=LONG)
     await second.play(1, 30)
     assert second.audd_calls == []
     assert [m["title"] for m in second.published] == ["Song 1"]
@@ -820,3 +824,46 @@ async def test_the_reported_length_follows_the_speed_correction(make_harness: An
     h = make_harness(durations={1: 100}, audd_speed_percent=-2.0)
     await h.play(1, 30)
     assert h.published[0]["playback_duration_seconds"] == pytest.approx(98)
+
+
+async def test_a_local_hit_without_length_asks_audd_once_for_it(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A track learned before lengths were stored gets its length from one extra AudD call."""
+    caplog.set_level(logging.INFO)
+    h = make_harness()  # first play: AudD reports no length
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    assert "duration_seconds" not in (h.db.track_metadata(1) or {})
+    h.durations[1] = 100  # from now on AudD knows the length
+    calls = len(h.audd_calls)
+    await h.play(1, 60)
+    assert messages(caplog, "Identified Artist 1 - Song 1 via local")
+    assert len(h.audd_calls) == calls + 1  # exactly one length request
+    assert messages(caplog, "Learned the length of Artist 1 - Song 1 via AudD: 100s")
+    assert (h.db.track_metadata(1) or {})["duration_seconds"] == 100
+    # MA got the metadata again, now with the length
+    assert h.published[-1]["title"] == "Song 1"
+    assert h.published[-1]["playback_duration_seconds"] == pytest.approx(100, abs=1)
+    # a later replay knows the length: no AudD at all
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 40)
+    assert len(h.audd_calls) == calls
+
+
+async def test_the_length_check_ignores_another_name(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If AudD names another track, the local recognition stands and nothing is stored."""
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    h.audd_script = [{"artist": "Someone", "title": "Else", "duration_seconds": 99}] * 2
+    await h.play(1, 60)
+    assert len(h.audd_calls) == calls + 1  # AudD answered: no second check
+    assert messages(caplog, "AudD names it Someone - Else, not Artist 1 - Song 1")
+    assert "duration_seconds" not in (h.db.track_metadata(1) or {})
+    assert [m["title"] for m in h.published] == ["Song 1", "Song 1"]

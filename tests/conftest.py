@@ -146,10 +146,11 @@ class Harness:
             scripted = self.audd_script.pop(0)
             if isinstance(scripted, Exception):
                 raise scripted
-            if not isinstance(scripted, dict) and scripted is not None:
-                return scripted  # e.g. an AudDNoMatch with a reason
             if scripted is None:
                 return None
+            if isinstance(scripted, dict):
+                return dict(scripted)  # a scripted hit, e.g. another track than played
+            return scripted  # e.g. an AudDNoMatch with a reason
         songs = {c // 1000 for c in codes if c}
         song = max(songs, key=lambda s: sum(1 for c in codes if c // 1000 == s), default=0)
         if song not in self.audd_known:

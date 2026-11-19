@@ -16,6 +16,13 @@ wrong name (as long as AudD reports the track length, which it usually does).
   started and how long it is, Music Assistant now shows the position in the song and the track
   length (a progress bar), instead of the time since the source started. The length follows the
   speed correction, so the bar ends when the track ends on your turntable.
+- **Lengths for tracks you already have:** a track recognized locally that has no stored length
+  yet gets one extra AudD request (once) to learn it, so the progress bar and the end guard work
+  for your whole collection over time. If AudD names a different track, the local recognition
+  stands and nothing is stored.
+- **Merge duplicates** (for developers/advanced users): `scripts/merge-tracks.sh` merges two
+  tracks that are one recording when AudD named it in two ways (e.g. *Barry White* and *The Love
+  Unlimited Orchestra*); the other name is remembered, so the duplicate does not come back.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the
@@ -36,8 +43,9 @@ wrong name (as long as AudD reports the track length, which it usually does).
   plugin keeps being recognized; re-select it once under *Audio sources to recognize* to make that
   permanent. *Allow analysis of the audio input* (on by default) is a setting of the Sendspin
   player that has the input.
-- Tracks learned before this version have no stored length yet. They get one the next time AudD
-  identifies them; until then a local recognition of such a track has no end guard.
+- Tracks learned before this version have no stored length yet. They get one through the extra
+  AudD request above, the first time you play them again: expect about one AudD request per
+  known track, once.
 
 ## 0.8.0 (2026-11-18)
 
