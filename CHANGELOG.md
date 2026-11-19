@@ -67,6 +67,8 @@ wrong name (as long as AudD reports the track length, which it usually does).
   it, so it can be analysed later even after Music Assistant was restarted. A silence of 30
   seconds or more (turning the record over) starts a new recording, so a finished side can be
   copied while the next one plays; playback itself is not affected.
+  Recordings are temporary troubleshooting data: each one is now **deleted automatically 3 days
+  after it started**, also when nobody copied it.
 
 ### Changed
 

@@ -34,7 +34,7 @@
     },
     "record_input_stream": {
       "label": "Record the input stream for debugging",
-      "description": "Record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute), with the recognizer's log of each session, in the provider's data folder (recordings/), up to the maximum below; then it stops by itself. Only for troubleshooting; the files stay on this server and are included in Home Assistant backups, so remove them afterwards."
+      "description": "Temporarily record the live input exactly as the recognizer receives it (WAV, about 10 MB per minute), with the recognizer's log of each session, in the provider's data folder (recordings/), up to the maximum below; then it stops by itself. Only for troubleshooting recognition: every recording is deleted automatically 3 days after it started. The files stay on this server (and are included in Home Assistant backups meanwhile)."
     },
     "record_input_max_minutes": {
       "label": "Maximum recording (minutes)",

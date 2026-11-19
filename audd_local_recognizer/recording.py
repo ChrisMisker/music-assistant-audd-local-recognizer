@@ -1,10 +1,11 @@
 """
-Recording the live input for troubleshooting (opt-in advanced setting; stays on the server).
+Temporary recording of the live input for troubleshooting (opt-in advanced setting).
 
 The recording holds exactly the audio the recognizer receives (before any output to players),
-as 16-bit WAV at the source's rate and channel count, in segments of a few minutes. A hard cap
-on the total recorded time, counted over all files in the folder, keeps the disk use bounded
-across sessions and restarts. Files can be replayed offline through the recognizer
+as 16-bit WAV at the source's rate and channel count, in segments of a few minutes. It is
+diagnostic data, not a music library: a hard cap on the total recorded time (counted over all
+files in the folder) bounds the disk use, and every recording is deleted automatically
+RECORDING_KEEP_DAYS after it started. Files can be replayed offline through the recognizer
 (`scripts/replay_recording.py`).
 """
 
@@ -14,6 +15,7 @@ import logging
 import queue
 import time
 import wave
+from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener
 from typing import TYPE_CHECKING
 
@@ -26,6 +28,10 @@ if TYPE_CHECKING:
 
 MAX_RECORDING_SECONDS = 3600  # default: one LP, both sides (a setting can raise it)
 SEGMENT_SECONDS = 300
+# Recordings are temporary diagnostic data: each session (its WAV segments, log and database
+# copy) is deleted this long after it started, also when nobody fetched it.
+RECORDING_KEEP_DAYS = 3
+_STAMP_LENGTH = len("20261119-153338")
 FLUSH_SECONDS = 10  # write to disk in blocks of this many seconds
 # A silence this long (turning the record over, changing records) ends the current recording; the
 # next music starts a new one with its own session log and database copy, so a finished side can
@@ -81,6 +87,28 @@ def recorded_seconds(folder: Path) -> float:
         except wave.Error, EOFError, OSError:
             continue  # a segment that was cut off; ignore it
     return total
+
+
+def remove_expired_recordings(
+    folder: Path, *, keep_days: float = RECORDING_KEEP_DAYS, now: float | None = None
+) -> int:
+    """Delete every recording session that started more than keep_days ago; return how many."""
+    if not folder.exists():
+        return 0
+    cutoff = (time.time() if now is None else now) - keep_days * 86400
+    expired: set[str] = set()
+    for path in folder.iterdir():
+        stamp = path.name[:_STAMP_LENGTH]
+        try:
+            started = datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp()  # noqa: DTZ007
+        except ValueError:
+            continue  # not a recording file
+        if started < cutoff:
+            expired.add(stamp)
+    for path in list(folder.iterdir()):
+        if path.name[:_STAMP_LENGTH] in expired and path.is_file():
+            path.unlink(missing_ok=True)
+    return len(expired)
 
 
 class InputRecorder:

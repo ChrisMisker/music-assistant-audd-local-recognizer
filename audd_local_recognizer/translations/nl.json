@@ -34,7 +34,7 @@
     },
     "record_input_stream": {
       "label": "Invoerstream opnemen voor foutopsporing",
-      "description": "Neem de live invoer op precies zoals de herkenning die ontvangt (WAV, ongeveer 10 MB per minuut), met het logboek van de herkenning per sessie, in de datamap van de provider (recordings/), tot het maximum hieronder; daarna stopt het vanzelf. Alleen voor het oplossen van problemen; de bestanden blijven op deze server en komen ook in de Home Assistant-back-ups, dus verwijder ze daarna."
+      "description": "Neem de live invoer tijdelijk op precies zoals de herkenning die ontvangt (WAV, ongeveer 10 MB per minuut), met het logboek van de herkenning per sessie, in de datamap van de provider (recordings/), tot het maximum hieronder; daarna stopt het vanzelf. Alleen voor het oplossen van problemen met de herkenning: elke opname wordt 3 dagen na de start automatisch verwijderd. De bestanden blijven op deze server (en komen in de tussentijd ook in de Home Assistant-back-ups)."
     },
     "record_input_max_minutes": {
       "label": "Maximale opnameduur (minuten)",

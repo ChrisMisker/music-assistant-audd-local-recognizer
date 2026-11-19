@@ -132,3 +132,23 @@ def test_split_action(
         split_action(recording=recording, waiting=waiting, in_gap=in_gap, silence_seconds=silence)
         == expected
     )
+
+
+def test_recordings_older_than_the_keep_period_are_deleted(tmp_path: Path) -> None:
+    """Recordings are temporary: a whole expired session goes, a recent one stays."""
+    from datetime import datetime  # noqa: PLC0415
+
+    from audd_local_recognizer.recording import remove_expired_recordings  # noqa: PLC0415
+
+    old, recent = "20261110-120000", "20261119-120000"
+    for stamp in (old, recent):
+        for suffix in ("_01.wav", "_02.wav", ".log", "_db.sqlite3"):
+            (tmp_path / f"{stamp}{suffix}").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_text("not a recording")
+    now = datetime(2026, 11, 19, 18, 0).timestamp()  # noqa: DTZ001 - local clock, like the names
+    assert remove_expired_recordings(tmp_path, keep_days=3, now=now) == 1
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert left == sorted(
+        ["notes.txt", *(f"{recent}{s}" for s in ("_01.wav", "_02.wav", ".log", "_db.sqlite3"))]
+    )
+    assert remove_expired_recordings(tmp_path / "missing") == 0

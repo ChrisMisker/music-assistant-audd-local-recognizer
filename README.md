@@ -176,7 +176,7 @@ Things to keep in mind:
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
 | *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). Local recognition is not affected. |
-| *Advanced:* **Record the input stream for debugging** | Off by default. Records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session, in the provider's data folder, up to the maximum below; then it stops. For troubleshooting only; the files are included in Home Assistant backups, so remove them afterwards. |
+| *Advanced:* **Record the input stream for debugging** | Off by default. Temporarily records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session, in the provider's data folder, up to the maximum below; then it stops. For troubleshooting recognition only: every recording is deleted automatically 3 days after it started (meanwhile it is included in Home Assistant backups). |
 | *Advanced:* **Maximum recording (minutes)** | Total length of all recordings kept (default 60, up to 600). |
 | *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 

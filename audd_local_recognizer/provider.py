@@ -28,9 +28,11 @@ from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_
 from .recording import (
     FLUSH_SECONDS,
     MAX_RECORDING_SECONDS,
+    RECORDING_KEEP_DAYS,
     RECORDING_SPLIT_SILENCE_SECONDS,
     InputRecorder,
     SessionLog,
+    remove_expired_recordings,
     split_action,
 )
 from .sources import selected_match, source_key
@@ -116,6 +118,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 "started a new, empty one. The old file was kept as %s",
                 moved_aside,
             )
+        await self._remove_expired_recordings()
         stats = await asyncio.to_thread(self._db.stats)
         self.logger.info(
             "AudD + Local Fingerprints v%s: db=%s tracks=%d references=%d landmarks=%d "
@@ -274,11 +277,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 advanced=True,
                 label="Record the input stream for debugging",
                 description=(
-                    "Record the live input exactly as the recognizer receives it (WAV, about "
-                    "10 MB per minute), with the recognizer's log of each session, in the "
-                    "provider's data folder (recordings/), up to the maximum below; then it stops "
-                    "by itself. Only for troubleshooting; the files stay on this server and are "
-                    "included in Home Assistant backups, so remove them afterwards."
+                    "Temporarily record the live input exactly as the recognizer receives it "
+                    "(WAV, about 10 MB per minute), with the recognizer's log of each session, in "
+                    "the provider's data folder (recordings/), up to the maximum below; then it "
+                    "stops by itself. Only for troubleshooting recognition: every recording is "
+                    f"deleted automatically {RECORDING_KEEP_DAYS} days after it started. The files "
+                    "stay on this server (and are included in Home Assistant backups meanwhile)."
                 ),
             ),
             ConfigEntry(
@@ -452,8 +456,19 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             await self._start_recording(session_id, fmt)
         return True
 
+    async def _remove_expired_recordings(self) -> None:
+        """Delete recordings older than RECORDING_KEEP_DAYS: they are temporary."""
+        folder = self._storage_dir() / RECORDINGS_SUBDIR
+        if removed := await asyncio.to_thread(remove_expired_recordings, folder):
+            self.logger.info(
+                "Deleted %d input recording(s) older than %d days (recordings are temporary)",
+                removed,
+                RECORDING_KEEP_DAYS,
+            )
+
     async def _start_recording(self, session_id: str, fmt: PcmFormat) -> None:
         self._formats[session_id] = fmt
+        await self._remove_expired_recordings()
         folder = self._storage_dir() / RECORDINGS_SUBDIR
         max_seconds = self._recording_seconds()
         recorder = await asyncio.to_thread(
