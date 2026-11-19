@@ -106,9 +106,94 @@ def _normalize(text: str) -> str:
     return _SPACES.sub(" ", text).strip().casefold()
 
 
+# Title suffixes that name an edition of the same recording, not another recording: AudD (via
+# Apple/Spotify) returns "You See The Trouble With Me" and "... (Album Version)", "Sussudio" and
+# "Sussudio (2016 Remaster)" for one track. Only this fixed list is ignored; "(Live)", "(Remix)",
+# "(Radio Edit)" and the like stay part of the title (other recordings or other lengths).
+_EDITION = re.compile(
+    r"(?:album|single|lp)\s+version"
+    r"|(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+(?:version|\d{4}))*",
+    re.IGNORECASE,
+)
+_TRAILING_PART = re.compile(r"\s*(?:\(([^()]*)\)|\[([^\[\]]*)\]|\s-\s+([^()\[\]]*?))\s*$")
+
+
+def _strip_editions(title: str) -> str:
+    """Remove trailing edition suffixes like '(Album Version)' or ' - 2016 Remaster'."""
+    while (match := _TRAILING_PART.search(title)) is not None:
+        content = next(part for part in match.groups() if part is not None).strip()
+        if not _EDITION.fullmatch(content) or not title[: match.start()].strip():
+            break
+        title = title[: match.start()]
+    return title
+
+
+def _title_key(title: str) -> str:
+    return _normalize(_strip_editions(_normalize(title)))
+
+
 def track_key(metadata: dict[str, Any]) -> str:
-    """Return the normalized identity key of a track (artist + title)."""
-    return f"{_normalize(metadata['artist'])}\x1f{_normalize(metadata['title'])}"
+    """Return the normalized identity key of a track (artist + title without edition)."""
+    return f"{_normalize(metadata['artist'])}\x1f{_title_key(metadata['title'])}"
+
+
+def _rekey(key: str) -> str:
+    """Re-apply the current normalization to a stored key (e.g. an alias)."""
+    artist, _, title = key.partition("\x1f")
+    return f"{_normalize(artist)}\x1f{_title_key(title)}"
+
+
+def _drop_stale_aliases(db: sqlite3.Connection, track_id: int, key: str) -> None:
+    """Re-normalize a track's aliases and drop those that equal its own key now."""
+    row = db.execute("SELECT metadata_json FROM tracks WHERE id=?", (track_id,)).fetchone()
+    metadata = json.loads(str(row[0]))
+    aliases = sorted({_rekey(alias) for alias in metadata.get(ALIASES, [])} - {key})
+    if aliases == metadata.get(ALIASES, []):
+        return
+    if aliases:
+        metadata[ALIASES] = aliases
+    else:
+        metadata.pop(ALIASES, None)
+    db.execute("UPDATE tracks SET metadata_json=? WHERE id=?", (_dump(metadata), track_id))
+
+
+def _merge_rows(db: sqlite3.Connection, keep_id: int, drop_id: int) -> int:
+    """
+    Merge track drop_id into keep_id inside a transaction; return the references moved.
+
+    The kept track keeps its metadata and only fills empty fields from the dropped one (such
+    as the duration); the dropped key becomes an alias of the kept track.
+    """
+    rows = {
+        int(track_id): (str(key), json.loads(str(metadata_json)))
+        for track_id, key, metadata_json in db.execute(
+            "SELECT id, track_key, metadata_json FROM tracks WHERE id IN (?, ?)",
+            (keep_id, drop_id),
+        )
+    }
+    if set(rows) != {keep_id, drop_id}:
+        msg = f"unknown track id(s): {sorted({keep_id, drop_id} - set(rows))}"
+        raise KeyError(msg)
+    keep_key, kept = rows[keep_id]
+    drop_key, dropped = rows[drop_id]
+    merged = {**kept}
+    for field_name, value in dropped.items():
+        if field_name == ALIASES:
+            continue
+        if value not in (None, "") and _is_empty(field_name, merged.get(field_name)):
+            merged[field_name] = value
+    aliases = {*kept.get(ALIASES, []), drop_key, *dropped.get(ALIASES, [])} - {keep_key}
+    if aliases:
+        merged[ALIASES] = sorted(aliases)
+    moved = db.execute(
+        "UPDATE reference_windows SET track_id=? WHERE track_id=?", (keep_id, drop_id)
+    ).rowcount
+    db.execute("DELETE FROM tracks WHERE id=?", (drop_id,))
+    db.execute(
+        "UPDATE tracks SET metadata_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (_dump(merged), keep_id),
+    )
+    return int(moved)
 
 
 def _is_empty(field_name: str, value: Any) -> bool:
@@ -158,35 +243,49 @@ class FingerprintDatabase:
 
     def _rekey_tracks(self) -> None:
         """
-        Re-apply track_key to stored tracks, merging tracks that now coincide.
+        Re-apply track_key to stored tracks (and aliases), merging tracks that now coincide.
 
-        Keeps the database consistent when the key normalization improves. References of
-        a merged duplicate move to the surviving (oldest) track.
+        Keeps the database consistent when the key normalization improves. A merged duplicate
+        goes into the oldest track (lowest id), which keeps its metadata (see _merge_rows).
         """
         with self._transaction() as db:
-            rows = db.execute("SELECT id, track_key, metadata_json FROM tracks ORDER BY id")
-            for track_id, old_key, metadata_json in rows.fetchall():
-                metadata = json.loads(metadata_json)
+            rows = db.execute("SELECT id FROM tracks ORDER BY id").fetchall()
+            for (track_id,) in rows:
+                row = db.execute(
+                    "SELECT track_key, metadata_json FROM tracks WHERE id=?", (track_id,)
+                ).fetchone()
+                if row is None:
+                    continue  # merged into an older track earlier in this loop
+                old_key, metadata = str(row[0]), json.loads(str(row[1]))
+                changed = False
                 if metadata.get("artwork") and is_placeholder_artwork(metadata["artwork"]):
                     # an older version stored Deezer's empty "no cover" image as artwork
                     metadata["artwork"] = None
+                    changed = True
+                new_key = track_key(metadata)
+                if metadata.get(ALIASES):
+                    aliases = sorted({_rekey(alias) for alias in metadata[ALIASES]} - {new_key})
+                    if aliases != metadata[ALIASES]:
+                        if aliases:
+                            metadata[ALIASES] = aliases
+                        else:
+                            metadata.pop(ALIASES)
+                        changed = True
+                if changed:
                     db.execute(
                         "UPDATE tracks SET metadata_json=? WHERE id=?", (_dump(metadata), track_id)
                     )
-                new_key = track_key(metadata)
                 if new_key == old_key:
                     continue
                 existing = db.execute(
                     "SELECT id FROM tracks WHERE track_key=?", (new_key,)
                 ).fetchone()
-                if existing is None:
-                    db.execute("UPDATE tracks SET track_key=? WHERE id=?", (new_key, track_id))
-                    continue
-                db.execute(
-                    "UPDATE reference_windows SET track_id=? WHERE track_id=?",
-                    (existing[0], track_id),
-                )
-                db.execute("DELETE FROM tracks WHERE id=?", (track_id,))
+                if existing is not None:
+                    keep_id, drop_id = sorted((int(existing[0]), int(track_id)))
+                    _merge_rows(db, keep_id, drop_id)
+                    track_id = keep_id  # noqa: PLW2901 - the surviving track gets the key
+                    _drop_stale_aliases(db, track_id, new_key)
+                db.execute("UPDATE tracks SET track_key=? WHERE id=?", (new_key, track_id))
 
     def upsert_track(self, metadata: dict[str, Any]) -> int:
         """
@@ -230,44 +329,15 @@ class FingerprintDatabase:
         """
         Merge track drop_id into keep_id and return the number of references moved.
 
-        For one recording that AudD named in two ways (e.g. another artist credit). The kept
-        track keeps its metadata and only fills empty fields from the dropped one (such as the
-        duration); the dropped key becomes an alias, so a later AudD hit with that name lands on
-        the kept track instead of creating the duplicate again.
+        For one recording that AudD named in two ways (e.g. another artist credit). The dropped
+        key becomes an alias, so a later AudD hit with that name lands on the kept track instead
+        of creating the duplicate again (see _merge_rows).
         """
         if keep_id == drop_id:
             msg = "cannot merge a track into itself"
             raise ValueError(msg)
         with self._transaction() as db:
-            rows = {
-                int(track_id): (str(key), json.loads(str(metadata_json)))
-                for track_id, key, metadata_json in db.execute(
-                    "SELECT id, track_key, metadata_json FROM tracks WHERE id IN (?, ?)",
-                    (keep_id, drop_id),
-                )
-            }
-            if set(rows) != {keep_id, drop_id}:
-                msg = f"unknown track id(s): {sorted({keep_id, drop_id} - set(rows))}"
-                raise KeyError(msg)
-            _, kept = rows[keep_id]
-            drop_key, dropped = rows[drop_id]
-            merged = {**kept}
-            for field_name, value in dropped.items():
-                if field_name == ALIASES:
-                    continue
-                if value not in (None, "") and _is_empty(field_name, merged.get(field_name)):
-                    merged[field_name] = value
-            aliases = [*kept.get(ALIASES, []), drop_key, *dropped.get(ALIASES, [])]
-            merged[ALIASES] = sorted(set(aliases))
-            moved = db.execute(
-                "UPDATE reference_windows SET track_id=? WHERE track_id=?", (keep_id, drop_id)
-            ).rowcount
-            db.execute("DELETE FROM tracks WHERE id=?", (drop_id,))
-            db.execute(
-                "UPDATE tracks SET metadata_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (_dump(merged), keep_id),
-            )
-            return int(moved)
+            return _merge_rows(db, keep_id, drop_id)
 
     def artwork_urls(self, host: str) -> list[tuple[int, str]]:
         """Return (track_id, artwork URL) of tracks whose artwork is on host."""

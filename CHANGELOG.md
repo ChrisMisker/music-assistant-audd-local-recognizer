@@ -23,6 +23,11 @@ wrong name (as long as AudD reports the track length, which it usually does).
 - **Merge duplicates** (for developers/advanced users): `scripts/merge-tracks.sh` merges two
   tracks that are one recording when AudD named it in two ways (e.g. *Barry White* and *The Love
   Unlimited Orchestra*); the other name is remembered, so the duplicate does not come back.
+- **Fewer duplicate tracks:** edition suffixes such as *(Album Version)*, *(Single Version)* or
+  *(2016 Remaster)* no longer make a separate track, so "You See The Trouble With Me" and "You See
+  The Trouble With Me (Album Version)" are one track. Existing duplicates are merged automatically
+  when the provider starts (the older track keeps its name). *(Live)*, *(Remix)* or *(Radio Edit)*
+  still count as different recordings.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the

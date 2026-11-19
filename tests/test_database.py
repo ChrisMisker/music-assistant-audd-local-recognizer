@@ -339,3 +339,69 @@ def test_merge_tracks_rejects_unknown_or_identical_ids(db_path: Path) -> None:
         db.merge_tracks(track, track)
     with pytest.raises(KeyError, match="unknown"):
         db.merge_tracks(track, 999)
+
+
+@pytest.mark.parametrize(
+    ("title", "plain"),
+    [
+        ("You See The Trouble With Me (Album Version)", "You See The Trouble With Me"),
+        (
+            "It's Ecstasy When You Lay Down Next To Me (Single Version)",
+            "It's Ecstasy When You Lay Down Next To Me",
+        ),
+        ("Sussudio (2016 Remaster)", "Sussudio"),
+        ("Impossible (Digitally Remastered)", "Impossible"),
+        ("Two Hearts - 2016 Remaster", "Two Hearts"),
+        ("Easy Lover [Remastered 2009]", "Easy Lover"),
+    ],
+)
+def test_track_key_ignores_edition_suffixes(title: str, plain: str) -> None:
+    assert track_key({"artist": "A", "title": title}) == track_key({"artist": "A", "title": plain})
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Separate Lives (Love Theme From White Nights)",
+        "Against All Odds (Take A Look At Me Now)",
+        "Easy Lover (Live)",
+        "Easy Lover (Radio Edit)",
+        "(I Love You) For Sentimental Reasons",
+        "Remastered",
+        "(Album Version)",
+    ],
+)
+def test_track_key_keeps_other_parts_of_the_title(title: str) -> None:
+    key = track_key({"artist": "A", "title": title})
+    assert key == f"a\x1f{title.casefold()}"
+
+
+def test_reopen_merges_an_edition_into_the_oldest_track(db_path: Path) -> None:
+    """Old keys with '(Album Version)' merge with the plain title; the older track survives."""
+    import json  # noqa: PLC0415
+
+    db = FingerprintDatabase(db_path)
+    old_meta = {"artist": "Barry White", "title": "You See The Trouble With Me (Album Version)"}
+    with sqlite3.connect(db_path) as conn:  # written with the old key, before this change
+        cur = conn.execute(
+            "INSERT INTO tracks(track_key, metadata_json) VALUES(?, ?)",
+            ("barry white\x1fyou see the trouble with me (album version)", json.dumps(old_meta)),
+        )
+        older = int(cur.lastrowid or 0)
+    newer = db.upsert_track(
+        {"artist": "Barry White", "title": "You See The Trouble With Me", "duration_seconds": 200}
+    )
+    assert newer != older
+    db.add_reference(older, "p1", 0.0, _landmarks(5))
+    db.add_reference(newer, "p2", 0.0, _landmarks(5, prefix="x"))
+    reopened = FingerprintDatabase(db_path)
+    assert reopened.stats().tracks == 1
+    kept = reopened.track_metadata(older)
+    assert kept is not None
+    assert kept["title"] == old_meta["title"]  # the older track keeps its name
+    assert kept["duration_seconds"] == 200  # and gets the newer one's length
+    assert "aliases" not in kept  # the old key is no alias: the new key covers it
+    assert (
+        reopened.upsert_track({"artist": "Barry White", "title": "You See The Trouble With Me"})
+        == older
+    )
