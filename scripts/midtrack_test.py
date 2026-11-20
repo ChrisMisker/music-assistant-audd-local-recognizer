@@ -243,9 +243,12 @@ def main() -> None:
                 close += 1
             else:
                 far += 1
-            where = (
-                "position uncertain → start 0" if r["uncertain"] else f"position off {err:+.0f}s"
-            )
+            if r["uncertain"]:
+                where = "position uncertain → start 0"
+            elif err is None:
+                where = "position not worked out"
+            else:
+                where = f"position off {float(str(err)):+.0f}s"
             outcome = f"local @{r['after']}s, {where}"
         print(f"{case.title[:45]:45} drop @{case.offset:5.1f}s: {outcome}")
     times = sorted(int(str(r["after"])) for r in results if r["after"] is not None)

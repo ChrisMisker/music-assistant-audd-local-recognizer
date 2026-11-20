@@ -100,11 +100,6 @@ VARIANTS = [
         ["MAX_LEARN_SECONDS_KNOWN_END=600"],
     ),
     Variant(
-        "no-needle-lift-rule",
-        "every real gap is an observed length (before 2026-11-19)",
-        [f"OBSERVED_END_WINDOW_SECONDS={BIG}"],
-    ),
-    Variant(
         "acceptance-0.8",
         "local acceptance as in 0.8: no confirm-coherent, no gap prior",
         ["CONFIRM_COHERENT_VOTES=0", f"LOCAL_START_PRIOR_SECONDS={BIG}"],
@@ -124,13 +119,12 @@ VARIANTS = [
     ),
     Variant(
         "all-0.9-off",
-        "every 0.9 safeguard off (confirm-coherent, gap prior, end guard, long learning, lifts)",
+        "every 0.9 safeguard off (confirm-coherent, gap prior, end guard, long learning)",
         [
             "CONFIRM_COHERENT_VOTES=0",
             f"LOCAL_START_PRIOR_SECONDS={BIG}",
             "UNCERTAIN_END_GUARD_SECONDS=5",
             "MAX_LEARN_SECONDS_KNOWN_END=600",
-            f"OBSERVED_END_WINDOW_SECONDS={BIG}",
         ],
         needle_drops=True,
     ),
@@ -147,7 +141,6 @@ MARKERS = {
     "uncertain_positions": "uncertain (song start",
     "tails_moved": "of the previous track's windows past its real end",
     "lengths_adopted": "observed length",  # counted as "adopted" below
-    "needle_lifts": "the needle was lifted",
     "learning_capped": "stopped learning after",
 }
 
@@ -236,7 +229,7 @@ def _report(summary: dict[str, dict[str, Any]], variants: list[Variant]) -> str:
     rows = [
         (
             "variant                  pass local AudD none calls  med wrong acc soft unc moved"
-            " adopt lift cap     MB | drops: ok wrong close far unc"
+            " adopt cap     MB | drops: ok wrong close far unc"
         ),
     ]
     for v in variants:
@@ -255,7 +248,7 @@ def _report(summary: dict[str, dict[str, Any]], variants: list[Variant]) -> str:
             f"{s['unidentified']:4d} {s['audd_calls']:5d} {med:>4} {s['wrong']:5d} "
             f"{s['max_other_votes']:3d} {s['soft_boundaries']:4d} "
             f"{s['uncertain_positions']:3d} {s['tails_moved']:5d} {s['lengths_adopted']:5d} "
-            f"{s['needle_lifts']:4d} {s['learning_capped']:3d} {s['mb']:6.1f} | {drops}"
+            f"{s['learning_capped']:3d} {s['mb']:6.1f} | {drops}"
         )
         rows.extend(f"    WRONG {detail}" for detail in s["wrong_detail"])
         rows.extend(f"    ERROR {error}" for error in s["errors"])

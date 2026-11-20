@@ -79,11 +79,10 @@ SONG_START_TOLERANCE_SECONDS = 2
 # observed length; a digital dropout (exact zeros, -120 dBFS) does not.
 UNCERTAIN_END_GUARD_SECONDS = 20
 OBSERVED_LENGTH_TOLERANCE_SECONDS = 3.0
-# A gap long before the expected end is a lifted needle, not the end of the song (2026-11-19,
-# needle drops in Foreigner Suite noted 711 s and 435 s for an 1095 s track): a gap only gives an
-# observed length from this many seconds before the expected end on (AudD's length can be another,
-# longer edit: on a live LP 10-30 s too long).
-OBSERVED_END_WINDOW_SECONDS = 45
+# A lifted needle also ends in a real gap and so gives an observed length, but it is only noted:
+# adopting needs two observations within the tolerance. A rule that ignored gaps far before the
+# expected end (2026-11-19) blocked a real correction (Barry White, 188 s twice, AudD 280 s) in the
+# overnight ablation, so it was removed again (2026-11-20).
 DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
 # Stream dropouts: the Sendspin input sometimes delivers ~2 s of exact digital zeros in the middle
 # of a track (5x on 2026-11-19 morning). A turntable never produces exact zeros (the needle and
@@ -636,18 +635,6 @@ class RecognitionEngine:
         ):
             # the chunk that confirmed the gap is not part of the passage
             song_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
-            if (
-                passage.track_end_at is not None
-                and song_end < passage.track_end_at - OBSERVED_END_WINDOW_SECONDS
-            ):
-                self.logger.info(
-                    "Gap %.0fs before the expected end of %s: the needle was lifted, "
-                    "not an observed length (passage %s)",
-                    passage.track_end_at - song_end,
-                    describe(passage.metadata),
-                    passage.short_id,
-                )
-                return
             self._in_background(
                 self._observe_length(passage.track_id, song_end - passage.song_start_at)
             )

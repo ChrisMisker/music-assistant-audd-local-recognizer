@@ -66,8 +66,6 @@ wrong name (as long as AudD reports the track length, which it usually does).
   plays per track, but it used to count whole plays, so two short needle drops in the middle of a
   long track could remove both full plays, including the start. It now counts per part of the
   track: an older play is removed only when newer plays cover the same part twice.
-- **Lifting the needle is not the end of the track:** a silence long before the expected end (45
-  seconds or more) no longer counts as a measured track length.
 - A track that turns out to be longer than AudD's length (another edit or version) is recognized
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the
