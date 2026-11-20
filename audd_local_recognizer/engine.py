@@ -121,6 +121,14 @@ AUDD_MAX_ATTEMPTS_PER_PASSAGE = 20
 AUDD_THOROUGH_MAX_ATTEMPTS = 40
 # Stream-wide: never two AudD calls closer than this, whatever the passages do.
 AUDD_MIN_INTERVAL_SECONDS = 30
+# Speed correction per attempt (2026-11-20, Barry White singles in the AudD dashboard): AudD holds
+# several uploads of one recording, mastered ~1-2 % apart in speed, and accepts a sample only within
+# ~±0.5-1 % of the one it matches, so no single correction finds them all. Retries therefore go
+# through these offsets (in AUDD_SPEED_STEP_PERCENT steps) from the configured correction: the
+# setting itself every other attempt (a miss from a scratch or a stream hole gets a second chance),
+# slower first (most hits so far were on the slow side). 0 % steps switch it off.
+AUDD_SPEED_STEP_PERCENT = 1.0
+AUDD_SPEED_PATTERN = (0, -1, 0, 1)
 # Stream-wide exponential backoff, only for real HTTP/network/API failures.
 # When AudD is due but the latest local lookup already points at a known track (a candidate with
 # >= POSTPONE_MIN_VOTES), wait one more lookup for local confirmation instead of spending an AudD
@@ -487,6 +495,7 @@ class Passage:
     after_gap: bool = False  # opened by audio resuming after a real gap
     settled: bool = False  # song start stored and the previous play corrected
     position_lookups_left: int = 0  # deciding the song start later (see LATER_POSITION_*)
+    audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
 
     @property
     def short_id(self) -> str:
@@ -846,7 +855,8 @@ class RecognitionEngine:
             return
         # Timing comes from this hit: the timecode is where this sample ended in the song.
         timecode = parse_timecode(hit.get("audd_timecode"))
-        song_start_at = window_end - timecode * self._speed_factor if timecode is not None else None
+        factor = self._passage_factor(passage)
+        song_start_at = window_end - timecode * factor if timecode is not None else None
         self.logger.info(
             "AudD HIT: %s (passage %s, attempt %d)",
             describe(metadata),
@@ -1048,14 +1058,16 @@ class RecognitionEngine:
             AUDD_FAST_INTERVAL_SECONDS if fast else AUDD_SLOW_INTERVAL_SECONDS
         )
         self.last_audd_at = self.stream_seconds
+        speed = self._attempt_speed(passage.audd_attempts)
         self.logger.info(
-            "AudD attempt %d/%d on %ds sample (passage %s)",
+            "AudD attempt %d/%d on %ds sample at %+.1f%% (passage %s)",
             passage.audd_attempts,
             self._audd_max_attempts,
             SAMPLE_SECONDS,
+            speed,
             passage.short_id,
         )
-        wav = pcm_to_wav(pcm, self.fmt, self.audd_speed_percent)
+        wav = pcm_to_wav(pcm, self.fmt, speed)
         try:
             result = await self._audd(wav)
         except asyncio.CancelledError:
@@ -1078,7 +1090,13 @@ class RecognitionEngine:
             await self._keep_sample(wav, pcm, passage, window_end, f"no match: {reason}")
             return None
         await self._keep_sample(wav, pcm, passage, window_end, f"hit: {describe(result)}")
+        passage.audd_hit_speed_percent = speed
         return result
+
+    def _attempt_speed(self, attempt: int) -> float:
+        """Return the speed correction (%) for the n-th AudD attempt of a passage (1-based)."""
+        offset = AUDD_SPEED_PATTERN[(attempt - 1) % len(AUDD_SPEED_PATTERN)]
+        return self.audd_speed_percent + offset * AUDD_SPEED_STEP_PERCENT
 
     async def _keep_sample(
         self, wav: bytes, pcm: bytes, passage: Passage, window_end: float, outcome: str
@@ -1092,7 +1110,7 @@ class RecognitionEngine:
                 "attempt": passage.audd_attempts,
                 "window_seconds": [round(max(0.0, window_end - SAMPLE_SECONDS), 1), window_end],
                 "outcome": outcome,
-                "speed_correction_percent": self.audd_speed_percent,
+                "speed_correction_percent": self._attempt_speed(passage.audd_attempts),
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
                 **sample_stats(pcm, self.fmt),
@@ -1118,6 +1136,12 @@ class RecognitionEngine:
     def _speed_factor(self) -> float:
         """Real (turntable) seconds per second of the original recording, from the correction."""
         return 1.0 + self.audd_speed_percent / 100.0
+
+    def _passage_factor(self, passage: Passage) -> float:
+        """Return the speed factor for AudD's timecode and length here (the hit's sample)."""
+        if passage.audd_hit_speed_percent is None:
+            return self._speed_factor
+        return 1.0 + passage.audd_hit_speed_percent / 100.0
 
     def _identify(  # noqa: PLR0913 - timing is optional and keyword-only
         self,
@@ -1285,7 +1309,7 @@ class RecognitionEngine:
                 "No track duration known: no end guard (passage %s)", passage.short_id
             )
             return
-        end_at = song_start_at + duration * self._speed_factor
+        end_at = song_start_at + duration * self._passage_factor(passage)
         if passage.seconds > end_at + TRACK_END_GUARD_SECONDS:
             # The track already played longer than its duration says (another version or edit).
             self.logger.info(
@@ -1451,7 +1475,7 @@ class RecognitionEngine:
         )
         timecode = parse_timecode(hit.get("audd_timecode"))
         song_start_at = (
-            window_end - timecode * self._speed_factor
+            window_end - timecode * self._passage_factor(passage)
             if timecode is not None
             else passage.song_start_at
         )

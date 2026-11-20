@@ -318,6 +318,7 @@ async def test_audd_cadence_and_cap_for_unknown_passage(
     make_harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(eng, "AUDD_MAX_ATTEMPTS_PER_PASSAGE", 6)
+    monkeypatch.setattr(eng, "AUDD_SPEED_STEP_PERCENT", 0.0)  # exact sample codes
     h = make_harness(audd_known=set())
     await h.play(9, 900)
     # 24, 54, 84 (30 s apart), then every 90 s to spare AudD requests, capped per passage
@@ -660,6 +661,33 @@ async def test_audd_sample_uses_the_speed_correction(make_harness: Any) -> None:
     with wave.open(io.BytesIO(wav)) as reader:
         assert reader.getnframes() > 12 * 100  # 12 s at 100 Hz, made ~2 % longer
     assert h.published  # the fake AudD still identifies the (slightly slower) sample
+
+
+async def test_audd_retries_alternate_the_speed_correction(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AudD's uploads differ in speed: retries try 1 % slower and faster, the setting in between."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(samples=[], audd_speed_percent=-3.0, audd_known=set(), audd_thorough=True)
+    await h.play(9, 200)
+    assert h.samples is not None
+    speeds = [info["speed_correction_percent"] for _, info in h.samples]
+    assert speeds[:6] == [-3.0, -4.0, -3.0, -2.0, -3.0, -4.0]
+    assert messages(caplog, "AudD attempt 2/40 on 12s sample at -4.0%")
+
+
+async def test_the_timecode_uses_the_speed_of_the_identified_sample(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A hit on a retry at another speed converts AudD's timecode and length with that speed."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 1000}, audd_speed_percent=-2.0)
+    h.audd_script = [None]  # the first attempt (at -2 %) misses; the retry is at -3 %
+    await h.play(1, 70)
+    # the hit's window ends at 54 s with timecode ~54-55: the song started at ~1 s and ends at
+    # ~1 + 1000 * 0.97 = ~971 s (with the setting's 0.98 it would be ~981 s)
+    assert messages(caplog, "AudD attempt 2/20 on 12s sample at -3.0%")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 97")
 
 
 async def test_fast_start_fingerprints_the_start_of_a_passage_densely(make_harness: Any) -> None:
