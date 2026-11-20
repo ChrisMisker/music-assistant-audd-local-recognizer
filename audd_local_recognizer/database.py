@@ -90,6 +90,9 @@ class DatabaseStats:
 
 
 _QUOTES = re.compile(r"[\"'`\u00b4\u2018\u2019\u201a\u201c\u201d\u201e]")
+# punctuation inside a name: AudD returns "Never never gonna give ya up" and "Never, Never Gonna
+# Give Ya Up" for one recording (2026-11-20); hyphens, brackets and "&" stay (they carry meaning)
+_PUNCTUATION = re.compile(r"[,.!?;:\u2026]")
 _SPACES = re.compile(r"\s+")
 
 
@@ -103,12 +106,12 @@ DURATION_SOURCE = "duration_source"
 
 def _normalize(text: str) -> str:
     """
-    Casefold, drop quote characters and collapse whitespace.
+    Casefold, drop quote characters and punctuation, and collapse whitespace.
 
-    AudD spells the same artist differently between results, e.g. 'Nat "King" Cole'
-    and 'Nat King Cole'; both must map to one track.
+    AudD spells the same artist or title differently between results, e.g. 'Nat "King" Cole'
+    and 'Nat King Cole', 'Never never…' and 'Never, Never…'; each pair must map to one track.
     """
-    text = _QUOTES.sub("", unicodedata.normalize("NFKC", text))
+    text = _PUNCTUATION.sub(" ", _QUOTES.sub("", unicodedata.normalize("NFKC", text)))
     return _SPACES.sub(" ", text).strip().casefold()
 
 
@@ -117,7 +120,7 @@ def _normalize(text: str) -> str:
 # "Sussudio (2016 Remaster)" for one track. Only this fixed list is ignored; "(Live)", "(Remix)",
 # "(Radio Edit)" and the like stay part of the title (other recordings or other lengths).
 _EDITION = re.compile(
-    r"(?:album|single|lp)\s+version"
+    r"(?:original\s+)?(?:album|single|lp)\s+version"
     r"|(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?remaster(?:ed)?(?:\s+(?:version|\d{4}))*",
     re.IGNORECASE,
 )

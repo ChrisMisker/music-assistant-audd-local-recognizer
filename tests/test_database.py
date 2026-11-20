@@ -126,6 +126,17 @@ def test_track_key_ignores_quote_variants() -> None:
     )
 
 
+def test_track_key_ignores_punctuation() -> None:
+    """Regression (2026-11-20): 'Never never…' and 'Never, Never…' made two tracks."""
+    assert track_key({"artist": "Barry White", "title": "Never never gonna give ya up"}) == (
+        track_key({"artist": "Barry White", "title": "Never, Never Gonna Give Ya Up"})
+    )
+    assert track_key({"artist": "A", "title": "Honey Please, Can't Ya See"}) == track_key(
+        {"artist": "A", "title": "Honey, Please, Can't Ya See"}
+    )
+    assert track_key({"artist": "A", "title": "Pts. 1 & 2"}) == "a\x1fpts 1 & 2"
+
+
 def test_reopen_merges_tracks_that_now_share_a_key(db_path: Path) -> None:
     import json  # noqa: PLC0415
 
@@ -416,6 +427,10 @@ def test_merge_tracks_rejects_unknown_or_identical_ids(db_path: Path) -> None:
         ("Impossible (Digitally Remastered)", "Impossible"),
         ("Two Hearts - 2016 Remaster", "Two Hearts"),
         ("Easy Lover [Remastered 2009]", "Easy Lover"),
+        (
+            "I'm Gonna Love You Just A Little More Baby (Original Album Version)",
+            "I'm Gonna Love You Just A Little More Baby",
+        ),
     ],
 )
 def test_track_key_ignores_edition_suffixes(title: str, plain: str) -> None:
