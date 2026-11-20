@@ -202,7 +202,7 @@ Things to keep in mind:
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
-| *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). Local recognition is not affected. |
+| *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). When AudD misses, retries also try 1 % slower and faster. Local recognition is not affected. |
 | *Advanced:* **Record the input stream for debugging** | Off by default. Temporarily records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session, in the provider's data folder, up to the maximum below; then it stops. For troubleshooting recognition only: every recording is deleted automatically 3 days after it started (meanwhile it is included in Home Assistant backups). |
 | *Advanced:* **Maximum recording (minutes)** | Total length of all recordings kept (default 60, up to 600). |
 | *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
@@ -267,7 +267,12 @@ a little fast made AudD miss about 4 in 10 tracks; samples played 2 % slower wer
 3. Otherwise set **Speed correction for AudD** (advanced setting). Note that the right value is
    not simply the measured deviation: in our test (turntable at +0.82 %) AudD did *not* recognize
    the sample at -0.8 % or -1 %, but did at **-2 %** and -4 %. AudD seems to need the audio
-   slightly slower than the exact speed. **For a turntable that runs fast, start with -2.**
+   slightly slower than the exact speed. **For a turntable that runs fast, start with -2 or -3.**
+4. You don't need to find a perfect value: AudD knows several uploads of many recordings, and they
+   can differ by 1–2 % in speed (in our tests one Barry White single was found at -2 % in one part
+   of the song and only at -3 or -4 % in another). From 0.9, when AudD misses a track, the next
+   tries use your setting, then 1 % slower, your setting, 1 % faster, and so on, at no extra
+   requests.
 
 ## Troubleshooting
 

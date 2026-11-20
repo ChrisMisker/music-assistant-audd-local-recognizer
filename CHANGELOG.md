@@ -62,6 +62,13 @@ wrong name (as long as AudD reports the track length, which it usually does).
   second half of a long piece (e.g. an 18-minute suite) was never learned. When the provider knows
   where the song started and how long it is, it now learns to the end (up to 30 minutes; about
   3.5 MB for 18 minutes). Without that knowledge the 10-minute limit stays.
+- **AudD finds more of your records:** AudD often knows several uploads of the same recording,
+  and they can differ by 1–2 % in speed; it only recognizes a sample that is close to the one it
+  matches. When AudD misses a track, the next tries now alternate between your speed correction,
+  1 % slower and 1 % faster (no extra requests). The log shows the speed of every try.
+- **Fewer duplicate tracks:** commas and similar punctuation no longer make a separate track
+  ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), and "(Original
+  Album Version)" counts as an edition like "(Album Version)".
 - **The right moment after a needle drop:** when you put the needle down in the middle of a
   track, the provider recognizes it quickly but often cannot yet tell *where* in the track you
   are, and showed the time since the needle went down. It now keeps checking while the record
