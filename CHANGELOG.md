@@ -67,8 +67,9 @@ wrong name (as long as AudD reports the track length, which it usually does).
   matches. When AudD misses a track, the next tries now alternate between your speed correction,
   1 % slower and 1 % faster (no extra requests). The log shows the speed of every try.
 - **Fewer duplicate tracks:** commas and similar punctuation no longer make a separate track
-  ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), and "(Original
-  Album Version)" counts as an edition like "(Album Version)".
+  ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), square brackets
+  count as round ones ("Operator [That's …]" and "Operator (That's …)"), and "(Original Album
+  Version)" counts as an edition like "(Album Version)".
 - **The right moment after a needle drop:** when you put the needle down in the middle of a
   track, the provider recognizes it quickly but often cannot yet tell *where* in the track you
   are, and showed the time since the needle went down. It now keeps checking while the record

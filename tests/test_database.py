@@ -135,6 +135,9 @@ def test_track_key_ignores_punctuation() -> None:
         {"artist": "A", "title": "Honey, Please, Can't Ya See"}
     )
     assert track_key({"artist": "A", "title": "Pts. 1 & 2"}) == "a\x1fpts 1 & 2"
+    assert track_key(
+        {"artist": "Jim Croce", "title": "Operator [That's Not The Way It Feels]"}
+    ) == (track_key({"artist": "Jim Croce", "title": "Operator (That's Not The Way It Feels)"}))
 
 
 def test_reopen_merges_tracks_that_now_share_a_key(db_path: Path) -> None:

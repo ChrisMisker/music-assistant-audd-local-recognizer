@@ -93,6 +93,7 @@ _QUOTES = re.compile(r"[\"'`\u00b4\u2018\u2019\u201a\u201c\u201d\u201e]")
 # punctuation inside a name: AudD returns "Never never gonna give ya up" and "Never, Never Gonna
 # Give Ya Up" for one recording (2026-11-20); hyphens, brackets and "&" stay (they carry meaning)
 _PUNCTUATION = re.compile(r"[,.!?;:\u2026]")
+_BRACKETS = str.maketrans("[]", "()")
 _SPACES = re.compile(r"\s+")
 
 
@@ -112,6 +113,8 @@ def _normalize(text: str) -> str:
     and 'Nat King Cole', 'Never never…' and 'Never, Never…'; each pair must map to one track.
     """
     text = _PUNCTUATION.sub(" ", _QUOTES.sub("", unicodedata.normalize("NFKC", text)))
+    # "Operator [That's Not The Way It Feels]" and "Operator (That's …)": one track (2026-11-20)
+    text = text.translate(_BRACKETS)
     return _SPACES.sub(" ", text).strip().casefold()
 
 
