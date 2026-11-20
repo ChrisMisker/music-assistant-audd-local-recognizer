@@ -947,7 +947,7 @@ class RecognitionEngine:
                 return True
         return await self._judge_timeline(passage)
 
-    def _audd_song_start(  # noqa: PLR0913 - the timing inputs of one hit
+    def _audd_song_start(
         self,
         passage: Passage,
         track_id: int | None,
