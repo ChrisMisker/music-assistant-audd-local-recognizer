@@ -199,6 +199,8 @@ RELIABLE_POSITION_VOTES = 12
 # CONFIRMATIONS_REQUIRED lookups and POSITION_LEAD_FACTOR times the votes of any cluster more than
 # POSITION_RIVAL_SECONDS away (a song that repeats itself makes rival clusters: no decision).
 LATER_POSITION_LOOKUPS = 20
+# a passage after a gap whose AudD song start matches the play before the gap: the same song
+CONTINUATION_TOLERANCE_SECONDS = 5
 POSITION_LEAD_FACTOR = 2
 POSITION_RIVAL_SECONDS = 5
 # A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
@@ -493,6 +495,7 @@ class Passage:
     song_start_exact: bool = False  # song_start_at from an AudD timecode or a stored song start
     follows: ClosedPlay | None = None  # the identified play this passage followed without a gap
     after_gap: bool = False  # opened by audio resuming after a real gap
+    opened_at: float = 0.0  # stream seconds when the passage opened
     settled: bool = False  # song start stored and the previous play corrected
     position_lookups_left: int = 0  # deciding the song start later (see LATER_POSITION_*)
     audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
@@ -608,6 +611,8 @@ class RecognitionEngine:
         self.lookup_phases = max(1, lookup_phases)
         self.audd_thorough = audd_thorough
         self.soft_boundaries = 0
+        # the last identified play that closed: (track id, song start in stream seconds)
+        self.last_play: tuple[int, float] | None = None
         self.dropout_seconds = 0.0
         self.shown_passage_id: str | None = None  # passage whose track MA shows
         self.background: set[asyncio.Task[None]] = set()
@@ -687,7 +692,9 @@ class RecognitionEngine:
 
     def _open_passage(self, reason: str) -> Passage:
         passage = Passage(
-            window_bytes=self.window_bytes, evidence=TimelineEvidence(self.frame_seconds)
+            window_bytes=self.window_bytes,
+            evidence=TimelineEvidence(self.frame_seconds),
+            opened_at=self.stream_seconds,
         )
         self.passage = passage
         self.logger.info(
@@ -703,6 +710,8 @@ class RecognitionEngine:
         self.passage = None  # in-flight tasks for it now discard their results
         if passage is None:
             return
+        if passage.track_id is not None and passage.song_start_at is not None:
+            self.last_play = (passage.track_id, passage.opened_at + passage.song_start_at)
         self.logger.info(
             "Track boundary: %.1f dBFS for %.1fs; passage %s closed after %.0fs (%s)",
             level,
@@ -868,7 +877,7 @@ class RecognitionEngine:
         )
         # Timing comes from this hit: the timecode is where this sample ended in the song.
         song_start_at, exact = self._audd_song_start(
-            passage, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
+            passage, track_id, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
         )
         self._identify(
             passage,
@@ -938,9 +947,10 @@ class RecognitionEngine:
                 return True
         return await self._judge_timeline(passage)
 
-    def _audd_song_start(
+    def _audd_song_start(  # noqa: PLR0913 - the timing inputs of one hit
         self,
         passage: Passage,
+        track_id: int | None,
         metadata: dict[str, Any],
         window_end: float,
         timecode: float | None,
@@ -953,12 +963,28 @@ class RecognitionEngine:
         passage that began after a real gap, which ended the passage mid-song and, stored as
         exact, misled every later local hit. Like a weak local position (LOCAL_START_PRIOR_*):
         assume the song started with the passage, not exact; deciding the position later from
-        positioned plays can still correct it.
+        positioned plays can still correct it. Not when the gap split this same song (a quiet
+        moment, Hard Day 2026-11-19): the play before the gap then puts the song start at the
+        same moment, within CONTINUATION_TOLERANCE_SECONDS.
         """
         if timecode is None:
             return None, False
         start = window_end - timecode * self._passage_factor(passage)
         if passage.after_gap and start < -LOCAL_START_PRIOR_SECONDS:
+            if (
+                self.last_play is not None
+                and self.last_play[0] == track_id
+                and abs(passage.opened_at + start - self.last_play[1])
+                <= CONTINUATION_TOLERANCE_SECONDS
+            ):
+                self.logger.info(
+                    "%s continues the play before the gap (song started %.0fs before this "
+                    "passage) (passage %s)",
+                    describe(metadata),
+                    -start,
+                    passage.short_id,
+                )
+                return start, True
             self.logger.info(
                 "AudD places %s %.0fs before this passage began, which began after a gap: "
                 "probably another edit's timecode; assuming the song started with it (passage %s)",
@@ -1522,7 +1548,7 @@ class RecognitionEngine:
             passage.short_id,
         )
         hit_start, exact = self._audd_song_start(
-            passage, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
+            passage, track_id, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
         )
         song_start_at = hit_start if exact else passage.song_start_at
         passage.track_end_at = None

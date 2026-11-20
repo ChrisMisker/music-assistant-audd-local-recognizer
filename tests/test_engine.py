@@ -1181,6 +1181,20 @@ async def test_an_audd_timecode_far_before_a_passage_after_a_gap_is_not_trusted(
     assert "song_starts" not in (h.db.track_metadata(1) or {})  # nothing stored as exact
 
 
+async def test_a_gap_inside_a_song_keeps_audds_position(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Hard Day, offline 2026-11-20): a quiet moment split the song after 25 s."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 30)  # identified by AudD at 24 s: the song started with the passage
+    await h.quiet(GAP)
+    await h.play(1, 80, start=30 + GAP)  # the same song goes on after the quiet moment
+    assert messages(caplog, "probably another edit's timecode") == []
+    assert messages(caplog, "continues the play before the gap")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 267s (song started at -33s")
+
+
 async def test_a_stream_that_starts_mid_song_keeps_audds_position(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
