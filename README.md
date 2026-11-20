@@ -83,6 +83,29 @@ So: **the first time you play a record, expect about half a minute per track bef
 shows (and usually one AudD request). The next times most tracks are recognized locally within
 about 15–20 seconds, for free.** These figures will be updated as more records are tested.
 
+## Tips for the best results
+
+What we learned from many test sessions on a real turntable:
+
+- **Play a side from the start the first time.** The provider learns each track while it plays,
+  and AudD's answer tells it where in the song it is. A track first heard from its beginning gets
+  learned completely, with the right start and length.
+- **Let tracks play to the end.** What you skip is not learned, so a later play from that point
+  needs AudD again. At the end of a track (the silence, or the next track starting) the provider
+  also measures the track's real length on your record, which can differ from AudD's.
+- **Play a record twice if you can.** The second play is usually recognized locally and stores
+  a second set of fingerprints (two plays per track are kept), which makes later recognition more
+  reliable. On records without silence between tracks it also measures each track's length a
+  second time; a length measured twice replaces AudD's, so track changes are detected at the right
+  moment.
+- **Keep *Faster recognition at the start of known tracks* on.** In our tests about 50 % more tracks
+  were recognized locally with it, with fewer AudD requests, for about 25 % more disk space.
+- **If AudD misses many tracks, check your turntable's speed** and set the speed correction (see
+  [Questions](#questions)). Local recognition does not need it.
+- **Dropping the needle in the middle of a track is fine** once the track has been learned: it
+  is recognized locally, usually within 20–30 seconds, and the position in the song follows a
+  little later.
+
 ## Requirements
 
 - **Music Assistant Nightly** (2.11 development builds from November 2026 or later). **For now
@@ -145,10 +168,10 @@ add-on). **It grows as you play new music, and it can grow quickly**:
 - each play of a ~3-minute track adds roughly **0.5 MB**;
 - from version 0.7 each track keeps its **two most recent plays** (~1 MB for a 3-minute track,
   more for longer ones); older plays are removed automatically. With **faster recognition at
-  the start** (on by default from 0.8) it is ~35 % more (~1.35 MB for a 3-minute track). (In 0.6.0 there is no limit yet:
+  the start** (on by default from 0.8) it is ~25 % more (~1.25 MB for a 3-minute track; measured over all test recordings in November 2026). (In 0.6.0 there is no limit yet:
   every play adds to the database.)
 
-Rough upper limits from 0.7 (add ~35 % with fast start, on by default from 0.8):
+Rough upper limits from 0.7 (add ~25 % with fast start, on by default from 0.8):
 
 | Your music | Database size (max) |
 |---|---|
@@ -171,7 +194,7 @@ Things to keep in mind:
 | **AudD API token** | Needed to identify new music. Optional if you only want local recognition. |
 | **Audio sources to recognize** | **Choose your source here** (e.g. your turntable). Nothing is recognized until you do. |
 | *Advanced:* **Recognize all live audio sources** | Off by default. Turn on only if every live source that allows analysis should be recognized; normally you choose your sources above. |
-| **Faster recognition at the start of known tracks** | On by default. Stores more fingerprints of the first 30 seconds of every track, so a replay is usually recognized within 12–18 s without AudD. Uses ~35 % more disk space. |
+| **Faster recognition at the start of known tracks** | On by default. Stores more fingerprints of the first 30 seconds of every track, so a replay is usually recognized within 12–18 s without AudD. Uses ~25 % more disk space. |
 | *Advanced:* **Silence threshold (dBFS)** | Audio at or below this level counts towards a track gap (default −45). |
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
@@ -198,8 +221,9 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
   record, a few seconds of the next track can still be learned under the previous name; real DJ
   mixes and long crossfades are not handled. There is no way yet to remove wrongly learned tracks
   (see below).
-- **One long track** (for example a 20-minute classical piece) works: it is recognized once,
-  and learning stops after 10 minutes.
+- **One long track** (for example a 20-minute classical piece) works: it is recognized once and
+  learned to its end when its start and length are known (up to 30 minutes); otherwise learning
+  stops after 10 minutes.
 - **The album shown is AudD's**, often a digital compilation rather than the LP you are
   playing. Audio recognition identifies the recording, not your pressing. Using your own
   record collection's metadata is on the roadmap.
@@ -207,8 +231,8 @@ These are known and documented on purpose. Some are being worked on (see [ROADMA
   less for music you've played before. See [What to expect](#what-to-expect).
 - **During silence the last track stays visible** until the next one is recognized. Music
   Assistant has no way yet to withdraw it earlier.
-- **The time shown on the player** is the time since the source started, not the position
-  in the song.
+- **The time shown on the player** is the position in the song when the provider knows where
+  the song started and how long it is; otherwise it is the time since the source started.
 - **Artwork is best effort:** taken from Apple Music, Spotify or Deezer when AudD provides it.
   Some recordings have none.
 - **Live audio sources only.** Radio streams without song info are not supported yet.

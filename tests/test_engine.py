@@ -1090,6 +1090,53 @@ async def test_a_weak_far_position_after_a_gap_is_not_trusted(
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 300s (song started at 0s")
 
 
+async def test_a_weak_position_is_decided_later(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Needle drop: the position is too weak at the hit, but adds up while the record plays."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300}, sparse_every=3)
+    await h.play(1, 90, start=100)  # first play from mid-song: AudD stores the song start
+    await h.quiet(GAP)
+    published = len(h.published)
+    await h.play(1, 80, start=100)  # the same stretch again after a gap
+    assert messages(caplog, "Position of Artist 1 - Song 1 uncertain")
+    assert messages(caplog, "Position of Artist 1 - Song 1 decided later: song started at -100s")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s")
+    report = h.published[-1]
+    assert len(h.published) > published + 1  # the hit, then the corrected position
+    assert report["elapsed_seconds"] > 100  # the progress bar now shows the song position
+    starts = (h.db.track_metadata(1) or {})["song_starts"]
+    assert sorted(starts.values()) == [-100.0, -100.0]  # this play is positioned now too
+
+
+def test_a_song_start_with_an_equal_rival_is_not_decisive() -> None:
+    """A song that repeats itself: two song starts with the same evidence decide nothing."""
+    evidence = eng.TimelineEvidence(frame_seconds=1.0)
+    rows = []
+    query: dict[str, list[int]] = {}
+    for i in range(15):
+        for start, prefix in ((0.0, "a"), (60.0, "b")):  # the same audio at two places
+            fp_hash = f"{prefix}{i}"
+            query[fp_hash] = [i]
+            rows.append(MatchRow(fp_hash, i, 1, "ref", start))
+    evidence.add(query, rows, 0.0)
+    evidence.add(query, rows, 0.0)
+    position = evidence.song_start(1, {"ref": 0.0})
+    assert position is not None
+    assert position.votes == 15
+    assert position.rival_votes == 15
+    assert not position.decisive
+    rows = [r for r in rows if r.fingerprint_hash.startswith("a")]
+    evidence = eng.TimelineEvidence(frame_seconds=1.0)
+    evidence.add(query, rows, 0.0)
+    evidence.add(query, rows, 0.0)
+    position = evidence.song_start(1, {"ref": 0.0})
+    assert position is not None
+    assert position.decisive
+    assert evidence.song_start(1, {}) is None  # a play without a stored start says nothing
+
+
 async def test_a_strong_far_position_after_a_gap_is_trusted(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:

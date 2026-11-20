@@ -211,7 +211,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 description=(
                     "Stores more fingerprints of the first 30 seconds of every track, so a record "
                     "you play again from the start is usually recognized within 12-18 seconds "
-                    "without asking AudD. Uses about 35 % more disk space; turn off for a very "
+                    "without asking AudD. Uses about 25 % more disk space; turn off for a very "
                     "large collection. Applies to tracks learned (or played again) from now on."
                 ),
             ),

@@ -62,6 +62,11 @@ wrong name (as long as AudD reports the track length, which it usually does).
   second half of a long piece (e.g. an 18-minute suite) was never learned. When the provider knows
   where the song started and how long it is, it now learns to the end (up to 30 minutes; about
   3.5 MB for 18 minutes). Without that knowledge the 10-minute limit stays.
+- **The right moment after a needle drop:** when you put the needle down in the middle of a
+  track, the provider recognizes it quickly but often cannot yet tell *where* in the track you
+  are, and showed the time since the needle went down. It now keeps checking while the record
+  plays and, once the position is clear (usually 10-20 seconds later), Music Assistant jumps to
+  the right time in the song. In a song that repeats itself it keeps the safe choice.
 - **Dropping the needle mid-track no longer erases what was learned:** the provider keeps about two
   plays per track, but it used to count whole plays, so two short needle drops in the middle of a
   long track could remove both full plays, including the start. It now counts per part of the

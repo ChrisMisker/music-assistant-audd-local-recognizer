@@ -183,8 +183,9 @@ def run_case(
         asyncio.run(_replay([wav], FingerprintDatabase(db_path), clock, None, options))
     text = stream.getvalue()
     found = re.search(r"Identified (.+?) via local after (\d+)s", text)
-    start = re.search(r"song started at (-?\d+)s", text)
-    uncertain = "uncertain" in text
+    starts = re.findall(r"song started at (-?\d+)s", text)
+    start = starts[-1] if starts else None  # the last one: a position decided later wins
+    uncertain = "uncertain" in text and "decided later" not in text
     result: dict[str, object] = {
         "title": case.title,
         "offset": case.offset,
@@ -195,7 +196,7 @@ def run_case(
     }
     if found and start and not uncertain:
         # the passage opens when the music resumes after the hiss; song start = -position
-        result["position_error"] = -int(start.group(1)) - case.true_position
+        result["position_error"] = -int(start) - case.true_position
     return result
 
 

@@ -183,6 +183,16 @@ MIN_UNIQUE_COVERAGE_SECONDS = 30
 # or trimmed). Measured on 45 local hits of all recordings: genuine starts after a gap -9..+1 s.
 LOCAL_START_PRIOR_SECONDS = 15
 RELIABLE_POSITION_VOTES = 12
+# Decide the position later (2026-11-20, needle drops in Foreigner Suite: all three positions were
+# right but too weak to trust at the first hit): after a local identification without an exact
+# song start, every learned window is also looked up for up to LATER_POSITION_LOOKUPS windows. The
+# shared hashes with plays whose song start is stored add up per song start (all those plays vote
+# together); a song start is adopted once its cluster has RELIABLE_POSITION_VOTES from at least
+# CONFIRMATIONS_REQUIRED lookups and POSITION_LEAD_FACTOR times the votes of any cluster more than
+# POSITION_RIVAL_SECONDS away (a song that repeats itself makes rival clusters: no decision).
+LATER_POSITION_LOOKUPS = 20
+POSITION_LEAD_FACTOR = 2
+POSITION_RIVAL_SECONDS = 5
 # A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
 # far above that means abnormal input (noise, a broken source); it is not stored, so such a
 # source cannot blow up the database.
@@ -311,6 +321,25 @@ class Coherence:
     shift_seconds: float  # reference passage time minus this passage's time
 
 
+@dataclass(frozen=True)
+class SongPosition:
+    """Where the song started in this passage, from evidence against positioned plays."""
+
+    start_seconds: float  # passage time of the song start
+    votes: int  # distinct (play, hash) pairs at (about) this song start
+    lookups: int
+    rival_votes: int  # the strongest cluster more than POSITION_RIVAL_SECONDS away
+
+    @property
+    def decisive(self) -> bool:
+        """Return whether this position is strong and clearly ahead of any other."""
+        return (
+            self.votes >= RELIABLE_POSITION_VOTES
+            and self.lookups >= CONFIRMATIONS_REQUIRED
+            and self.votes >= POSITION_LEAD_FACTOR * self.rival_votes
+        )
+
+
 class TimelineEvidence:
     """
     Add the shared hashes of every lookup of a passage up by (track, reference passage, shift).
@@ -376,6 +405,44 @@ class TimelineEvidence:
                     best = candidate
         return best
 
+    def song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
+        """
+        Return the strongest song start of a track, from the plays with a stored song start.
+
+        A shift maps a reference play onto this passage, so the song started at the reference
+        play's song start minus the shift; plays without a stored start cannot say where the song
+        is and are left out (their passage start is not the song start after a needle drop).
+        """
+        merged: dict[int, dict[tuple[str, str], set[int]]] = {}
+        for (track, passage_id), bins in self._bins.items():
+            start = song_starts.get(passage_id)
+            if track != track_id or isinstance(start, bool) or not isinstance(start, int | float):
+                continue
+            offset = round(float(start) / COHERENCE_BIN_SECONDS)
+            for shift_bin, hashes in bins.items():
+                target = merged.setdefault(offset - shift_bin, {})
+                for fp_hash, seen in hashes.items():
+                    target.setdefault((passage_id, fp_hash), set()).update(seen)
+        clusters: list[tuple[int, int, int]] = []
+        for center in sorted(merged):
+            votes: dict[tuple[str, str], set[int]] = {}
+            for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
+                for key, seen in merged.get(index, {}).items():
+                    votes.setdefault(key, set()).update(seen)
+            clusters.append((len(votes), len(set().union(*votes.values())), center))
+        if not clusters:
+            return None
+        votes_best, lookups, center = max(clusters)
+        rival = max(
+            (
+                v
+                for v, _, c in clusters
+                if abs(c - center) * COHERENCE_BIN_SECONDS > POSITION_RIVAL_SECONDS
+            ),
+            default=0,
+        )
+        return SongPosition(center * COHERENCE_BIN_SECONDS, votes_best, lookups, rival)
+
     def clear(self) -> None:
         """Drop all evidence (after an identification)."""
         self._bins.clear()
@@ -419,6 +486,7 @@ class Passage:
     follows: ClosedPlay | None = None  # the identified play this passage followed without a gap
     after_gap: bool = False  # opened by audio resuming after a real gap
     settled: bool = False  # song start stored and the previous play corrected
+    position_lookups_left: int = 0  # deciding the song start later (see LATER_POSITION_*)
 
     @property
     def short_id(self) -> str:
@@ -1074,12 +1142,15 @@ class RecognitionEngine:
         passage.track_id = track_id
         passage.metadata = metadata
         passage.confirmer.reset()
-        passage.evidence.clear()  # not needed once identified
         passage.next_learn_at = passage.seconds + LEARN_INTERVAL_SECONDS
         if via == "local" and not _positive(duration) and self._audd is not None:
             passage.duration_checks_left = MAX_DURATION_CHECKS_PER_PASSAGE
         self._set_track_timing(passage, song_start_at, duration)
         passage.song_start_exact = song_start_exact and song_start_at is not None
+        if via == "local" and not passage.song_start_exact:
+            passage.position_lookups_left = LATER_POSITION_LOOKUPS  # keep the evidence
+        else:
+            passage.evidence.clear()  # not needed once identified
         if self._publish(self._report(passage, metadata)):
             self.shown_passage_id = passage.id
             self.logger.info("Reported stream metadata: %s", describe(metadata))
@@ -1267,12 +1338,61 @@ class RecognitionEngine:
         try:
             hashes = await self._fingerprint(pcm, self._divisor(window_end))
             await self._store_reference(passage, hashes, window_end)
+            if passage.position_lookups_left > 0 and self._is_current(passage):
+                await self._decide_position(passage, hashes, window_end)
             if self._duration_check_due(passage, window_end):
                 await self._check_duration(passage, pcm, window_end)
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Could not learn window (passage %s)", passage.short_id)
+
+    async def _decide_position(
+        self, passage: Passage, query: Fingerprints, window_end: float
+    ) -> None:
+        """Add a learned window to the position evidence; adopt the song start once decisive."""
+        passage.position_lookups_left -= 1
+        local = await self._run_blocking(self._db.lookup, query, passage.id)
+        if not self._is_current(passage) or passage.track_id is None:
+            return
+        passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
+        metadata = passage.metadata or {}
+        position = passage.evidence.song_start(passage.track_id, metadata.get(SONG_STARTS) or {})
+        if position is None or not position.decisive:
+            if passage.position_lookups_left == 0:
+                passage.evidence.clear()
+                self.logger.info(
+                    "Position of %s still undecided after %d lookups%s (passage %s)",
+                    describe(metadata),
+                    LATER_POSITION_LOOKUPS,
+                    ""
+                    if position is None
+                    else f" (best {position.votes} votes, runner-up {position.rival_votes})",
+                    passage.short_id,
+                )
+            return
+        passage.position_lookups_left = 0
+        passage.evidence.clear()
+        self.logger.info(
+            "Position of %s decided later: song started at %.0fs (%d votes from %d lookups, "
+            "runner-up %d) (passage %s)",
+            describe(metadata),
+            position.start_seconds,
+            position.votes,
+            position.lookups,
+            position.rival_votes,
+            passage.short_id,
+        )
+        passage.track_end_at = None
+        self._set_track_timing(passage, position.start_seconds, metadata.get("duration_seconds"))
+        passage.song_start_exact = True
+        passage.settled = False
+        await self._settle(passage)
+        if not self._is_current(passage):
+            return
+        if not self._publish(self._report(passage, metadata)):
+            self.logger.info("Music Assistant declined our metadata; recognition stopped")
+            self.stopped = True
 
     def _duration_check_due(self, passage: Passage, window_end: float) -> bool:
         return (
