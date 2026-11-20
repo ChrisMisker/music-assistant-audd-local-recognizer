@@ -1165,6 +1165,57 @@ def test_a_song_start_with_an_equal_rival_is_not_decisive() -> None:
     assert evidence.song_start(1, {}) is None  # a play without a stored start says nothing
 
 
+async def test_an_audd_timecode_far_before_a_passage_after_a_gap_is_not_trusted(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (In The Air Tonight, 2026-11-20): another edit's timecode ended the passage."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    # after the gap the passage holds song 1 from 100 s on: AudD's timecode says -100 s
+    await h.play(1, 80, start=100)
+    assert messages(caplog, "probably another edit's timecode")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 300s (song started at 0s")
+    assert messages(caplog, "Track boundary (no gap)") == []
+    assert "song_starts" not in (h.db.track_metadata(1) or {})  # nothing stored as exact
+
+
+async def test_a_stream_that_starts_mid_song_keeps_audds_position(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without a gap before it (the stream started mid-song) AudD's timecode is trusted."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 60, start=100)
+    assert messages(caplog, "probably another edit's timecode") == []
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s")
+
+
+async def test_a_measured_length_is_not_scaled_by_the_speed_correction(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Sussudio 260 vs 255 s, 2026-11-20): lengths depended on the AudD setting."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 80, 2: 600}, audd_speed_percent=-2.0)
+    for _ in range(2):
+        await h.play(1, 60)
+        await h.quiet(GAP, level=3)
+    assert messages(caplog, "Track 1: observed length 60s adopted")
+    metadata = h.db.track_metadata(1) or {}
+    assert metadata["duration_seconds"] == pytest.approx(60, abs=1)  # as measured, not 61.2
+    calls = len(h.audd_calls)
+    await h.play(1, 30)
+    assert len(h.audd_calls) == calls  # local
+    # the measured 60 s is turntable time already: the end is not scaled by 0.98 again
+    import re  # noqa: PLC0415
+
+    last = messages(caplog, "Expected end of Artist 1 - Song 1")[-1]
+    found = re.search(r"at (-?\d+)s \(song started at (-?\d+)s, duration 60s\)", last)
+    assert found is not None, last
+    assert int(found.group(1)) - int(found.group(2)) == pytest.approx(60, abs=1)
+
+
 async def test_a_strong_far_position_after_a_gap_is_trusted(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:

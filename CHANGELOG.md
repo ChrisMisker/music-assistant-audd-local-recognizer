@@ -70,6 +70,14 @@ wrong name (as long as AudD reports the track length, which it usually does).
   ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), square brackets
   count as round ones ("Operator [That's …]" and "Operator (That's …)"), and "(Original Album
   Version)" counts as an edition like "(Album Version)".
+- **No false track end from another version:** AudD sometimes matches a longer or shorter edit of
+  the recording (e.g. a 7:18 version of a 5:13 single). Its position then said the song had
+  started minutes before you put the needle down, and the provider ended the track mid-song. After
+  a silence such a position is no longer trusted: the song is assumed to start with the music, and
+  the provider waits for the real end.
+- **Measured track lengths no longer depend on the speed correction:** a length measured on your
+  record is stored as measured and beats AudD's length, also when you change the AudD speed
+  correction.
 - **The right moment after a needle drop:** when you put the needle down in the middle of a
   track, the provider recognizes it quickly but often cannot yet tell *where* in the track you
   are, and showed the time since the needle went down. It now keeps checking while the record

@@ -544,6 +544,13 @@ def _local_song_start(
     return -coherence.shift_seconds, False
 
 
+def _track_length(metadata: dict[str, Any], hit: dict[str, Any] | None = None) -> Any:
+    """Return the track length to use: one measured on this record beats AudD's."""
+    if metadata.get(DURATION_SOURCE) == "observed":
+        return metadata.get("duration_seconds")
+    return (hit or {}).get("duration_seconds") or metadata.get("duration_seconds")
+
+
 def _positive(value: Any) -> bool:
     """Return whether value is a usable positive number (a duration)."""
     return not isinstance(value, bool) and isinstance(value, int | float) and value > 0
@@ -853,15 +860,15 @@ class RecognitionEngine:
         metadata = await self._run_blocking(self._db.track_metadata, track_id) or hit
         if not self._is_current(passage):
             return
-        # Timing comes from this hit: the timecode is where this sample ended in the song.
-        timecode = parse_timecode(hit.get("audd_timecode"))
-        factor = self._passage_factor(passage)
-        song_start_at = window_end - timecode * factor if timecode is not None else None
         self.logger.info(
             "AudD HIT: %s (passage %s, attempt %d)",
             describe(metadata),
             passage.short_id,
             passage.audd_attempts,
+        )
+        # Timing comes from this hit: the timecode is where this sample ended in the song.
+        song_start_at, exact = self._audd_song_start(
+            passage, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
         )
         self._identify(
             passage,
@@ -869,8 +876,8 @@ class RecognitionEngine:
             metadata,
             via="AudD",
             song_start_at=song_start_at,
-            song_start_exact=song_start_at is not None,
-            duration=hit.get("duration_seconds") or metadata.get("duration_seconds"),
+            song_start_exact=exact,
+            duration=_track_length(metadata, hit),
         )
         await self._settle(passage)
         # Learn every lookup window of this passage, including the one AudD identified.
@@ -930,6 +937,37 @@ class RecognitionEngine:
                 await self._settle(passage)
                 return True
         return await self._judge_timeline(passage)
+
+    def _audd_song_start(
+        self,
+        passage: Passage,
+        metadata: dict[str, Any],
+        window_end: float,
+        timecode: float | None,
+    ) -> tuple[float | None, bool]:
+        """
+        Return (song start, exact?) from an AudD timecode, distrusting another edit's timecode.
+
+        AudD often matches another edit of the recording (In The Air Tonight: a 7:18 upload for
+        a 5:13 single, 2026-11-20); its timecode then puts the song start minutes before a
+        passage that began after a real gap, which ended the passage mid-song and, stored as
+        exact, misled every later local hit. Like a weak local position (LOCAL_START_PRIOR_*):
+        assume the song started with the passage, not exact; deciding the position later from
+        positioned plays can still correct it.
+        """
+        if timecode is None:
+            return None, False
+        start = window_end - timecode * self._passage_factor(passage)
+        if passage.after_gap and start < -LOCAL_START_PRIOR_SECONDS:
+            self.logger.info(
+                "AudD places %s %.0fs before this passage began, which began after a gap: "
+                "probably another edit's timecode; assuming the song started with it (passage %s)",
+                describe(metadata),
+                -start,
+                passage.short_id,
+            )
+            return 0.0, False
+        return start, True
 
     def _local_song_start(
         self, passage: Passage, metadata: dict[str, Any], coherence: Coherence | None
@@ -1171,7 +1209,7 @@ class RecognitionEngine:
             passage.duration_checks_left = MAX_DURATION_CHECKS_PER_PASSAGE
         self._set_track_timing(passage, song_start_at, duration)
         passage.song_start_exact = song_start_exact and song_start_at is not None
-        if via == "local" and not passage.song_start_exact:
+        if not passage.song_start_exact:
             passage.position_lookups_left = LATER_POSITION_LOOKUPS  # keep the evidence
         else:
             passage.evidence.clear()  # not needed once identified
@@ -1257,8 +1295,13 @@ class RecognitionEngine:
             self.logger.exception("Could not correct track timing (passage %s)", passage.short_id)
 
     async def _observe_length(self, track_id: int, played_seconds: float) -> None:
-        """Record a length measured on this record (turntable seconds -> recording seconds)."""
-        seconds = played_seconds / self._speed_factor
+        """
+        Record a length measured on this record, in turntable seconds as measured.
+
+        Not scaled by the AudD speed correction (until 2026-11-20 it was divided by it, so one
+        track measured at -3 % and at -2 % gave lengths ~1 % apart that were never adopted).
+        """
+        seconds = played_seconds
         if seconds <= SAMPLE_SECONDS:
             return
         try:
@@ -1309,7 +1352,12 @@ class RecognitionEngine:
                 "No track duration known: no end guard (passage %s)", passage.short_id
             )
             return
-        end_at = song_start_at + duration * self._passage_factor(passage)
+        metadata = passage.metadata or {}
+        measured = metadata.get(DURATION_SOURCE) == "observed" and duration == metadata.get(
+            "duration_seconds"
+        )
+        # AudD's length is in the recording's time; a length measured here is already turntable time
+        end_at = song_start_at + duration * (1.0 if measured else self._passage_factor(passage))
         if passage.seconds > end_at + TRACK_END_GUARD_SECONDS:
             # The track already played longer than its duration says (another version or edit).
             self.logger.info(
@@ -1473,14 +1521,13 @@ class RecognitionEngine:
             duration,
             passage.short_id,
         )
-        timecode = parse_timecode(hit.get("audd_timecode"))
-        song_start_at = (
-            window_end - timecode * self._passage_factor(passage)
-            if timecode is not None
-            else passage.song_start_at
+        hit_start, exact = self._audd_song_start(
+            passage, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
         )
-        self._set_track_timing(passage, song_start_at, duration)
-        if timecode is not None:
+        song_start_at = hit_start if exact else passage.song_start_at
+        passage.track_end_at = None
+        self._set_track_timing(passage, song_start_at, _track_length(metadata, hit))
+        if exact:
             passage.song_start_exact = True
             passage.settled = False
             await self._settle(passage)
