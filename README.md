@@ -100,6 +100,10 @@ What we learned from many test sessions on a real turntable:
   moment.
 - **Keep *Faster recognition at the start of known tracks* on.** In our tests about 50 % more tracks
   were recognized locally with it, with fewer AudD requests, for about 25 % more disk space.
+- **Give your turntable's audio a stable connection to Music Assistant.** When the stream drops
+  out (e.g. a weak Wi-Fi link to the device with the line-in), short dropouts are ignored, but a
+  dropout of 10 seconds or more looks like the end of the track: the rest is treated as a new
+  track and may cost an extra AudD request. A wired connection or a good Wi-Fi signal helps.
 - **If AudD misses many tracks, check your turntable's speed** and set the speed correction (see
   [Questions](#questions)). Local recognition does not need it.
 - **Dropping the needle in the middle of a track is fine** once the track has been learned: it
