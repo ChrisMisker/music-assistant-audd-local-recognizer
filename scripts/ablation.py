@@ -13,6 +13,11 @@ of scripts/replay_recording.py) or replay options. Then the needle-drop test
 (scripts/midtrack_test.py, against each session's own database copy) runs for every variant that
 touches local acceptance or position.
 
+The replays learn everything again with the code under test, so old recordings are fair there
+(only the oracle's truth and AudD answers come from the live logs). The needle-drop test replays
+against each session's own database copy, learned under the rules of that day: only its "recent"
+group (tracks with a stored song start, learned since 2026-11-19) is reported here.
+
 Per variant: passages identified locally / via AudD / not at all, AudD calls, median local time,
 wrong identifications, the highest accidental vote count, soft boundaries, uncertain positions,
 tails moved, lengths adopted, the final database size, and the needle-drop results. Compare each
@@ -219,7 +224,7 @@ def run_needle_drops(variant: Variant, folders: list[Path], out: Path, jobs: int
         command += ["--set", assignment]
     done = _run(command)
     (out / f"{variant.name}.needle.txt").write_text(done.stdout + done.stderr, encoding="utf-8")
-    found = re.search(r"^summary: (.+)$", done.stdout, re.MULTILINE)
+    found = re.search(r"^summary recent: (.+)$", done.stdout, re.MULTILINE)
     if not found:
         return {"error": (done.stderr.strip().splitlines() or ["no summary"])[-1]}
     return {k: v for k, _, v in (item.partition("=") for item in found.group(1).split())}
@@ -229,7 +234,7 @@ def _report(summary: dict[str, dict[str, Any]], variants: list[Variant]) -> str:
     rows = [
         (
             "variant                  pass local AudD none calls  med wrong acc soft unc moved"
-            " adopt cap     MB | drops: ok wrong close far unc"
+            " adopt cap     MB | recent drops: ok wrong close far unc"
         ),
     ]
     for v in variants:

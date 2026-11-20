@@ -55,6 +55,16 @@ ONE_THREAD = dict.fromkeys(
     ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1"
 )
 SEGMENT_SUFFIXES = (".wav", ".flac")
+# Recordings from this moment on were made with the current way of learning (fast start,
+# time-consistent evidence, stored song starts and lengths; before it no session database had a
+# stored song start). Older recordings replay against databases learned under older rules, so
+# their numbers are shown apart: decide on the recent group (user, 2026-11-20).
+RECENT_SINCE = "20261119-090000"
+
+
+def is_recent(folder_name: str, since: str = RECENT_SINCE) -> bool:
+    """Return whether a recording folder (named by its start) belongs to the recent group."""
+    return folder_name[:15] >= since
 
 
 @dataclass
@@ -225,8 +235,27 @@ def replay(folder: Path, fast_start: float = FAST_START_SECONDS) -> FolderResult
     return result
 
 
+def group_totals(
+    results: dict[str, FolderResult], since: str = RECENT_SINCE
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return the totals of the recent and the older folders, apart."""
+    groups: list[tuple[str, dict[str, Any]]] = []
+    for label, recent in ((f"recent (since {since})", True), ("older", False)):
+        passages = [
+            p
+            for name, result in results.items()
+            if not result.error and is_recent(name, since) == recent
+            for p in result.passages
+        ]
+        if passages:
+            groups.append((label, FolderResult(passages=passages).totals()))
+    return groups
+
+
 def compare(
-    current: dict[str, FolderResult], baseline: dict[str, FolderResult] | None
+    current: dict[str, FolderResult],
+    baseline: dict[str, FolderResult] | None,
+    since: str = RECENT_SINCE,
 ) -> list[str]:
     """Render totals per folder and the passages whose outcome changed."""
     out = [
@@ -259,6 +288,18 @@ def compare(
         )
         if before and not before.error:
             changes.extend(_passage_changes(name, before.passages, result.passages))
+    out.append("")
+    for label, now in group_totals(current, since):
+        then = dict(group_totals(baseline, since)).get(label) if baseline else None
+        keys = ("local", "audd", "unidentified", "audd_calls", "wrong", "max_other_votes")
+        diff = [f"{k} {then[k]}→{now[k]}" for k in keys if then and now[k] != then[k]]
+        med = f"{now['median_local_s']:.0f}s" if now["median_local_s"] is not None else "-"
+        out.append(
+            f"{label:16} {now['passages']:>4} {now['local']:>5} {now['audd']:>4} "
+            f"{now['unidentified']:>4} {now['audd_calls']:>5} {med:>4} {now['wrong']:>5} "
+            f"{now['max_other_votes']:>3}  {', '.join(diff) if diff else ''}"
+        )
+    out.append("Decide on the recent group; older recordings replay against older learning.")
     if changes:
         out += ["", "Changed or suspicious passages:", *changes]
     return out
@@ -342,6 +383,12 @@ def main() -> None:
         help=f"experiment: fast start window (default {FAST_START_SECONDS}, 0 = off); a run with "
         "another value is saved with a tag and never becomes the default baseline",
     )
+    parser.add_argument(
+        "--recent-since",
+        default=RECENT_SINCE,
+        metavar="YYYYmmdd-HHMMSS",
+        help=f"recordings from then on form the recent group (default {RECENT_SINCE})",
+    )
     args = parser.parse_args()
     tag = "" if args.fast_start == FAST_START_SECONDS else f"-fs{args.fast_start:g}"
 
@@ -369,7 +416,7 @@ def main() -> None:
     print(f"Done in {(time.monotonic() - began) / 60:.1f} min (commit {commit}).")
     print(f"Baseline: {baseline_path.name if baseline_path else 'none (first run)'}")
     print()
-    print("\n".join(compare(results, baseline)))
+    print("\n".join(compare(results, baseline, args.recent_since)))
     print()
     print("columns: pass(ages), local / AudD / none = how identified, calls = AudD calls,")
     print("med = median local time, wrong = named another track than live, acc = highest")

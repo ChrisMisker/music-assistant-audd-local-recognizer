@@ -32,6 +32,7 @@ import sqlite3
 import sys
 import tempfile
 import wave
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -72,6 +73,7 @@ class Case:
     offset: float  # seconds into the song
     drop_at: float  # session seconds where the cut starts
     true_position: float  # song position at the cut
+    positioned: bool = False  # the session DB has a stored song start for this track
 
 
 def _cases(folder: Path, drops: int, listen: int, rng: np.random.Generator) -> list[Case]:
@@ -87,8 +89,10 @@ def _cases(folder: Path, drops: int, listen: int, rng: np.random.Generator) -> l
         known = _known_tracks(db)
         same = _same_track(folder)
         for start, end, title in oracle.spans:
-            if not any(same(title, name) for name in known):
+            names = [name for name, _ in known if same(title, name)]
+            if not names:
                 continue  # its first play: nothing to recognize locally
+            positioned = any(has_start for name, has_start in known if name in names)
             song_start = oracle.song_starts.get(start, start)
             earliest = max(20.0, (start - song_start).total_seconds() + 1)
             latest = (end - song_start).total_seconds() - listen - 5
@@ -104,12 +108,14 @@ def _cases(folder: Path, drops: int, listen: int, rng: np.random.Generator) -> l
                         float(offset),
                         (cut - session_start).total_seconds(),
                         (cut - song_start).total_seconds() / oracle.speed_factor,
+                        positioned,
                     )
                 )
     return cases
 
 
-def _known_tracks(db: Path) -> list[str]:
+def _known_tracks(db: Path) -> list[tuple[str, bool]]:
+    """Return (artist - title, has a stored song start) for every track in a database."""
     with sqlite3.connect(f"file:{db}?immutable=1", uri=True) as conn:
         rows = conn.execute("SELECT metadata_json FROM tracks").fetchall()
     import json  # noqa: PLC0415
@@ -117,7 +123,8 @@ def _known_tracks(db: Path) -> list[str]:
     names = []
     for (meta,) in rows:
         metadata = json.loads(meta)
-        names.append(f"{metadata.get('artist')} - {metadata.get('title')}")
+        name = f"{metadata.get('artist')} - {metadata.get('title')}"
+        names.append((name, bool(metadata.get("song_starts"))))
     return names
 
 
@@ -200,6 +207,58 @@ def run_case(
     return result
 
 
+def _outcome(case: Case, r: dict[str, object], counts: Counter[str]) -> str:
+    """Count one drop's result and describe it."""
+    same = _same_track(case.folder)
+    ok = r["found"] is not None and same(str(r["found"]), case.title)
+    counts["drops"] += 1
+    counts["recognized"] += ok
+    if r["found"] is None:
+        return "not recognized"
+    if not ok:
+        counts["wrong"] += 1
+        return f"WRONG: {r['found']}"
+    err = r["position_error"]
+    if r["uncertain"] or err is None:
+        counts["position_uncertain"] += 1
+    elif abs(float(str(err))) <= 5:
+        counts["position_close"] += 1
+    else:
+        counts["position_far"] += 1
+    if r["uncertain"]:
+        where = "position uncertain → start 0"
+    elif err is None:
+        where = "position not worked out"
+    else:
+        where = f"position off {float(str(err)):+.0f}s"
+    return f"local @{r['after']}s, {where}"
+
+
+def _report(cases: list[Case], results: list[dict[str, object]]) -> None:
+    """Print every drop, then the totals for recently and earlier learned tracks apart."""
+    groups: dict[bool, Counter[str]] = {True: Counter(), False: Counter()}
+    times: dict[bool, list[int]] = {True: [], False: []}
+    for case, r in zip(cases, results, strict=True):
+        outcome = _outcome(case, r, groups[case.positioned])
+        if outcome.startswith("local"):
+            times[case.positioned].append(int(str(r["after"])))
+        mark = " " if case.positioned else "·"
+        print(f"{mark} {case.title[:45]:45} drop @{case.offset:5.1f}s: {outcome}")
+    print("\n· = the track had no stored song start yet (learned before 2026-11-19)")
+    for positioned, label in ((True, "recent"), (False, "older")):
+        counts = groups[positioned]
+        if not counts["drops"]:
+            continue
+        ordered = sorted(times[positioned])
+        median = ordered[len(ordered) // 2] if ordered else None
+        print(
+            f"summary {label}: drops={counts['drops']} recognized={counts['recognized']} "
+            f"wrong={counts['wrong']} median={median} "
+            f"position_close={counts['position_close']} position_far={counts['position_far']} "
+            f"position_uncertain={counts['position_uncertain']}"
+        )
+
+
 def main() -> None:
     """Run every needle drop of the given folders."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -226,39 +285,7 @@ def main() -> None:
                 [tuple(args.set)] * len(cases),
             )
         )
-    hits = wrong = uncertain = close = far = 0
-    for case, r in zip(cases, results, strict=True):
-        same = _same_track(case.folder)
-        ok = r["found"] is not None and same(str(r["found"]), case.title)
-        hits += ok
-        if r["found"] is None:
-            outcome = "not recognized"
-        elif not ok:
-            wrong += 1
-            outcome = f"WRONG: {r['found']}"
-        else:
-            err = r["position_error"]
-            if r["uncertain"] or err is None:
-                uncertain += 1
-            elif abs(float(str(err))) <= 5:
-                close += 1
-            else:
-                far += 1
-            if r["uncertain"]:
-                where = "position uncertain → start 0"
-            elif err is None:
-                where = "position not worked out"
-            else:
-                where = f"position off {float(str(err)):+.0f}s"
-            outcome = f"local @{r['after']}s, {where}"
-        print(f"{case.title[:45]:45} drop @{case.offset:5.1f}s: {outcome}")
-    times = sorted(int(str(r["after"])) for r in results if r["after"] is not None)
-    median = times[len(times) // 2] if times else None
-    print(f"\nrecognized {hits}/{len(cases)}, median {median}s after the drop")
-    print(
-        f"summary: drops={len(cases)} recognized={hits} wrong={wrong} median={median} "
-        f"position_close={close} position_far={far} position_uncertain={uncertain}"
-    )
+    _report(cases, results)
 
 
 if __name__ == "__main__":
