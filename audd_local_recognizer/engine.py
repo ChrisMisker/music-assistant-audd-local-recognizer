@@ -1566,16 +1566,17 @@ class RecognitionEngine:
             return
         passage.position_lookups_left = 0
         passage.evidence.clear()
-        self.logger.info(
-            "Position of %s decided later: song started at %.0fs (%d votes from %d lookups, "
-            "runner-up %d) (passage %s)",
-            describe(metadata),
-            position.start_seconds,
-            position.votes,
-            position.lookups,
-            position.rival_votes,
-            passage.short_id,
-        )
+        if position.lookups:  # a confirmed continuation was logged above
+            self.logger.info(
+                "Position of %s decided later: song started at %.0fs (%d votes from %d lookups, "
+                "runner-up %d) (passage %s)",
+                describe(metadata),
+                position.start_seconds,
+                position.votes,
+                position.lookups,
+                position.rival_votes,
+                passage.short_id,
+            )
         passage.track_end_at = None
         self._set_track_timing(passage, position.start_seconds, metadata.get("duration_seconds"))
         passage.song_start_exact = True
