@@ -30,7 +30,7 @@
     },
     "save_audd_samples": {
       "label": "AudD-fragmenten bewaren voor foutopsporing",
-      "description": "Bewaar de laatste 40 audiofragmenten die naar AudD zijn gestuurd, met de uitkomst en metingen, in de datamap van de provider (debug/). Alleen voor het oplossen van problemen; ze blijven op deze server."
+      "description": "Bewaar de laatste 250 audiofragmenten die naar AudD zijn gestuurd, met de uitkomst en metingen, in de datamap van de provider (debug/). Alleen voor het oplossen van problemen; ze blijven op deze server."
     },
     "record_input_stream": {
       "label": "Invoerstream opnemen voor foutopsporing",

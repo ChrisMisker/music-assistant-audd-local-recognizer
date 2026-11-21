@@ -65,7 +65,7 @@ FAST_START_SECONDS = 30.0
 MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
 CONF_RECORD_MINUTES = "record_input_max_minutes"
-MAX_RECORDING_MINUTES = 600
+MAX_RECORDING_MINUTES = 1440  # 24 h: two days of listening between two fetches (2026-11-21)
 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
@@ -264,7 +264,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 advanced=True,
                 label="Save AudD samples for debugging",
                 description=(
-                    "Keep the last 40 audio samples sent to AudD, with their outcome and "
+                    "Keep the last 250 audio samples sent to AudD, with their outcome and "
                     "measurements, in the provider's data folder (debug/). Only for "
                     "troubleshooting; they stay on this server."
                 ),

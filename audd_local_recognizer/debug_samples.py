@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-MAX_DEBUG_SAMPLES = 40
+MAX_DEBUG_SAMPLES = 250  # ~1 MB each; 40 were overwritten within an hour (2026-11-21)
 
 
 def write_debug_sample(folder: Path, wav: bytes, info: dict[str, Any]) -> Path:

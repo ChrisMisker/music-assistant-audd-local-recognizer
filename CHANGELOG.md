@@ -94,8 +94,10 @@ wrong name (as long as AudD reports the track length, which it usually does).
   again and then simply learned to its end.
 - When a passage started on the tail of the previous track, the fingerprints from before the
   recognized song started are no longer learned.
+- *Save AudD samples for debugging* keeps the last 250 samples (was 40, which a busy hour already
+  overwrote).
 - **Recording for troubleshooting** (advanced): new setting *Maximum recording (minutes)* (default
-  60, up to 600), and every recording now gets the recognizer's own log of that session next to
+  60, up to 1440 = 24 hours), and every recording now gets the recognizer's own log of that session next to
   it, so it can be analysed later even after Music Assistant was restarted. A silence of 30
   seconds or more (turning the record over) starts a new recording, so a finished side can be
   copied while the next one plays; playback itself is not affected.

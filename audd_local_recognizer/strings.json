@@ -30,7 +30,7 @@
     },
     "save_audd_samples": {
       "label": "Save AudD samples for debugging",
-      "description": "Keep the last 40 audio samples sent to AudD, with their outcome and measurements, in the provider's data folder (debug/). Only for troubleshooting; they stay on this server."
+      "description": "Keep the last 250 audio samples sent to AudD, with their outcome and measurements, in the provider's data folder (debug/). Only for troubleshooting; they stay on this server."
     },
     "record_input_stream": {
       "label": "Record the input stream for debugging",

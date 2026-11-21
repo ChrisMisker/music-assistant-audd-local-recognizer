@@ -204,8 +204,8 @@ Things to keep in mind:
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
 | *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). When AudD misses, retries also try 1 % slower and faster. Local recognition is not affected. |
 | *Advanced:* **Record the input stream for debugging** | Off by default. Temporarily records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session, in the provider's data folder, up to the maximum below; then it stops. For troubleshooting recognition only: every recording is deleted automatically 3 days after it started (meanwhile it is included in Home Assistant backups). |
-| *Advanced:* **Maximum recording (minutes)** | Total length of all recordings kept (default 60, up to 600). |
-| *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 40 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
+| *Advanced:* **Maximum recording (minutes)** | Total length of all recordings kept (default 60, up to 1440 = 24 hours; ~10 MB per minute). |
+| *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 250 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 
 The defaults were tuned on a real turntable. Only change them if track changes are missed
 (raise the silence threshold) or detected inside quiet passages (lower it, or raise the
