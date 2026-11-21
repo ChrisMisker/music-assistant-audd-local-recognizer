@@ -70,6 +70,9 @@ wrong name (as long as AudD reports the track length, which it usually does).
   ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), square brackets
   count as round ones ("Operator [That's …]" and "Operator (That's …)"), and "(Original Album
   Version)" counts as an edition like "(Album Version)".
+- **Fewer wrong local matches:** a single check now needs 6 matching fingerprints (was 5) to show
+  a title at once; in a test one song of another record reached 5 by chance. A real match with 5
+  is shown a few seconds later instead.
 - **No false track end from another version:** AudD sometimes matches a longer or shorter edit of
   the recording (e.g. a 7:18 version of a 5:13 single). Its position then said the song had
   started minutes before you put the needle down, and the provider ended the track mid-song. After
