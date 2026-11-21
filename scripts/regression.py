@@ -420,7 +420,7 @@ def main() -> None:
     print()
     print("columns: pass(ages), local / AudD / none = how identified, calls = AudD calls,")
     print("med = median local time, wrong = named another track than live, acc = highest")
-    print("accidental vote count (accepting needs >= 3 twice, or >= 5 at once)")
+    print("accidental vote count (accepting needs >= 3 twice, or >= 6 at once)")
     print(f"Saved: {saved}")
 
 
