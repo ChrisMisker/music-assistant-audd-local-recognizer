@@ -1,129 +1,76 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (unreleased)
 
-Records without silence between tracks no longer teach the provider the next track under the
-wrong name (as long as AudD reports the track length, which it usually does).
+Records without silence between tracks, live records, long pieces and needle drops now work much
+better; fewer wrong titles and duplicates; and the provider shows where you are in the song.
 
 ### New
 
-- **Gapless guard:** the provider now stores the track length that AudD reports, and uses it with
-  AudD's position in the song (or the position of a local match) to work out when the track should
-  end. Learning stops 5 seconds before that moment; if no silence follows within 5 seconds after
-  it, the provider starts listening for the next track anyway. New log lines: `Expected end of …`
-  and `Track boundary (no gap): …`.
-- **Track length and position in Music Assistant:** when the provider knows where the song
-  started and how long it is, Music Assistant now shows the position in the song and the track
-  length (a progress bar), instead of the time since the source started. The length follows the
-  speed correction, so the bar ends when the track ends on your turntable.
-- **Lengths for tracks you already have:** a track recognized locally that has no stored length
-  yet gets one extra AudD request (once) to learn it, so the progress bar and the end guard work
-  for your whole collection over time. If AudD names a different track, the local recognition
-  stands and nothing is stored.
-- **Merge duplicates** (for developers/advanced users): `scripts/merge-tracks.sh` merges two
-  tracks that are one recording when AudD named it in two ways (e.g. *Barry White* and *The Love
-  Unlimited Orchestra*); the other name is remembered, so the duplicate does not come back.
-- **Fewer duplicate tracks:** edition suffixes such as *(Album Version)*, *(Single Version)* or
-  *(2016 Remaster)* no longer make a separate track, so "You See The Trouble With Me" and "You See
-  The Trouble With Me (Album Version)" are one track. Existing duplicates are merged automatically
-  when the provider starts (the older track keeps its name). *(Live)*, *(Remix)* or *(Radio Edit)*
-  still count as different recordings.
-- **Live and gapless records:** a long stretch of unidentified music no longer stops asking AudD
-  after 8 tries (now 20, still one every 90 seconds after the first three), so on a live record
-  the next tracks get their chance even when one track in between is unknown to AudD. New
-  advanced setting *Ask AudD more often (live and gapless records)*: every 30 seconds instead of
-  90, at the cost of more requests.
-- **Self-correcting track ends on live and gapless records:** AudD's track length is often that
-  of another edit (on a live LP 10–30 seconds too long). When the next track is recognized, the
-  provider now knows where the previous one really ended: it removes what it learned past that
-  point and measures the real length; a length measured twice on your record replaces AudD's.
-  A real silence after a track also measures its length (a stream dropout does not). While a
-  length is not yet measured, learning stops 20 seconds before the expected end on such records.
-- A local recognition now knows where the song started even when the earlier play it matched
-  began in the middle of the song (after a boundary without silence), so the expected end is right.
-- **Stream dropouts no longer split a track:** the audio input sometimes delivers a second or two
-  of digital silence in the middle of a track (a stream hiccup, not the record). That used to end
-  the track and start recognition again; now it is ignored (log: `Stream dropout: … ignored`).
-  Longer digital silence (over 10 seconds, e.g. the source stopped) still ends the track.
-- **No stale title:** when a new track starts and is not recognized at the first check (after
-  12 seconds), Music Assistant no longer keeps showing the previous track (with a finished progress
-  bar) but shows your source again until the new track is recognized. During a short silence
-  between tracks the last title stays, as before; after 30 seconds of silence (the record has
-  ended) your source is shown again too.
-- **Fewer wrong local matches and wrong ends:** a local recognition from two weak checks now also
-  needs both checks to point at the same moment in the earlier play (a Kurt Vile track was briefly
-  shown as a Barry White track). In a track that repeats itself (a loop-based song), a weak local
-  match can find the right track at the wrong spot; after a silence the provider now assumes the
-  song started there, instead of expecting its end minutes too early.
-- **Nothing good is thrown away in a correction:** when AudD first gives a part or another name
-  and later the real track, what was learned under the first name is now kept for the real track
-  instead of deleted, so the next play of it is recognized locally.
-- **Long tracks are learned whole:** learning used to stop after 10 minutes of a track, so the
-  second half of a long piece (e.g. an 18-minute suite) was never learned. When the provider knows
-  where the song started and how long it is, it now learns to the end (up to 30 minutes; about
-  3.5 MB for 18 minutes). Without that knowledge the 10-minute limit stays.
-- **AudD finds more of your records:** AudD often knows several uploads of the same recording,
-  and they can differ by 1–2 % in speed; it only recognizes a sample that is close to the one it
-  matches. When AudD misses a track, the next tries now alternate between your speed correction,
-  1 % slower and 1 % faster (no extra requests). The log shows the speed of every try.
-- **Fewer duplicate tracks:** commas and similar punctuation no longer make a separate track
-  ("Never never gonna give ya up" and "Never, Never Gonna Give Ya Up" are one), square brackets
-  count as round ones ("Operator [That's …]" and "Operator (That's …)"), and "(Original Album
-  Version)" counts as an edition like "(Album Version)".
-- **Fewer wrong local matches:** a single check now needs 6 matching fingerprints (was 5) to show
-  a title at once; in a test one song of another record reached 5 by chance. A real match with 5
-  is shown a few seconds later instead.
-- **No false track end from another version:** AudD sometimes matches a longer or shorter edit of
-  the recording (e.g. a 7:18 version of a 5:13 single). Its position then said the song had
-  started minutes before you put the needle down, and the provider ended the track mid-song. After
-  a silence such a position is no longer trusted: the song is assumed to start with the music, and
-  the provider waits for the real end.
-- **Measured track lengths no longer depend on the speed correction:** a length measured on your
-  record is stored as measured and beats AudD's length, also when you change the AudD speed
-  correction.
-- **The right moment after a needle drop:** when you put the needle down in the middle of a
-  track, the provider recognizes it quickly but often cannot yet tell *where* in the track you
-  are, and showed the time since the needle went down. It now keeps checking while the record
-  plays and, once the position is clear (usually 10-20 seconds later), Music Assistant jumps to
-  the right time in the song. In a song that repeats itself it keeps the safe choice.
-- **Dropping the needle mid-track no longer erases what was learned:** the provider keeps about two
-  plays per track, but it used to count whole plays, so two short needle drops in the middle of a
-  long track could remove both full plays, including the start. It now counts per part of the
-  track: an older play is removed only when newer plays cover the same part twice.
-- A track that turns out to be longer than AudD's length (another edit or version) is recognized
-  again and then simply learned to its end.
-- When a passage started on the tail of the previous track, the fingerprints from before the
-  recognized song started are no longer learned.
-- *Save AudD samples for debugging* keeps the last 250 samples (was 40, which a busy hour already
-  overwrote).
-- **Recording for troubleshooting** (advanced): new setting *Maximum recording (minutes)* (default
-  60, up to 1440 = 24 hours), and every recording now gets the recognizer's own log of that session next to
-  it, so it can be analysed later even after Music Assistant was restarted. A silence of 30
-  seconds or more (turning the record over) starts a new recording, so a finished side can be
-  copied while the next one plays; playback itself is not affected.
-  Recordings are temporary troubleshooting data: each one is now **deleted automatically 3 days
-  after it started**, also when nobody copied it.
+- **Where you are in the song:** when the provider knows where the song started and how long it
+  is, Music Assistant shows the position and length (a progress bar), adjusted to your turntable's
+  speed correction.
+- **Records without silence between tracks** (live albums, continuous sides): the provider uses
+  the track length to work out when a track should end, stops learning just before it and starts
+  listening for the next track even without a gap (log: `Track boundary (no gap)`). When the next
+  track is recognized, it corrects where the previous one really ended and keeps what was learned
+  for the right track.
+- **Track lengths measured on your record:** the length of a track is measured at its end (a
+  silence or the next track); a length measured twice replaces AudD's, which is often that of
+  another edit. A track recognized locally that has no length yet gets one AudD request, once, to
+  learn it.
+- **Long pieces are learned whole** (up to 30 minutes when the start and length are known; until
+  now learning stopped after 10 minutes, so the second half of an 18-minute suite was never
+  learned).
+- **Needle drops:** when you put the needle down in the middle of a track, it is recognized as
+  before; the provider now also works out *where* in the song you are, usually 10–20 seconds
+  later, and Music Assistant jumps to that time. Dropping the needle mid-track no longer pushes
+  earlier, complete plays out of the database.
+- **AudD finds more of your records:** AudD often holds several uploads of one recording that
+  differ by 1–2 % in speed. When AudD misses a track, the next tries alternate between your speed
+  correction, 1 % slower and 1 % faster, at no extra requests. On a long unknown stretch AudD is
+  now asked up to 20 times (was 8); the new advanced setting *Ask AudD more often (live and
+  gapless records)* asks every 30 seconds instead of 90.
+- **No stale title:** when a new track is not recognized at the first check, Music Assistant shows
+  your source again instead of the previous track; also after 30 seconds of silence (the record
+  has ended).
+- **Merging duplicates** (advanced): `scripts/merge-tracks.sh` merges two tracks AudD named in two
+  ways; the other name is remembered.
+- **Troubleshooting** (advanced): *Maximum recording (minutes)* (default 60, up to 1440 = 24
+  hours); every recording gets the recognizer's log of that session; a silence of 30 seconds or
+  more starts a new recording; recordings are **deleted automatically 3 days after they started**.
+  *Save AudD samples for debugging* keeps the last 250 samples (was 40).
 
-### Changed
+### Changed and fixed
 
-- *Recognize all live audio sources* is now an advanced setting, listed after *Audio sources
-  to recognize*: choosing your turntable is the normal way. If you had it turned on, it stays on.
-- **Fewer false local matches when AudD can't help** (no token, AudD unavailable, or a track AudD
-  doesn't know): the longer an unknown track plays, the more evidence a local match now needs. In
-  a test without AudD, an unknown Barry White track was taken for a Phil Collins track after three
-  minutes, and the wrong name was then learned. Normal recognition is unaffected: known tracks are
-  still recognized in about 18 seconds.
+- **Fewer wrong titles:** a single local check needs 6 matching fingerprints (was 5) to show a
+  title at once, two weak checks must point at the same moment of an earlier play, and an unknown
+  track needs more evidence the longer it plays without AudD. (In tests one song of another record
+  reached 5 by chance, and a Kurt Vile track was briefly shown as Barry White.)
+- **No false track ends:** AudD's position from another edit of a recording (e.g. a 7:18 version
+  of a 5:13 single) no longer ends the track mid-song; a quiet moment inside a song is recognized
+  as such (the song goes on, and it is not taken for the track's length); a song that repeats
+  itself can no longer put its end minutes too early.
+- **Fewer duplicate tracks:** edition suffixes such as *(Album Version)*, *(Original Album
+  Version)* or *(2016 Remaster)*, commas and other punctuation, and square brackets no longer make
+  a separate track. Existing duplicates are merged when the provider starts. *(Live)*, *(Remix)*
+  or *(Radio Edit)* still count as different recordings.
+- **Stream dropouts** (a second or two of digital silence from the audio input) no longer split a
+  track; longer digital silence (over 10 seconds) still ends it.
+- When a passage started on the tail of the previous track, that tail is no longer learned under
+  the new song; a measured length no longer depends on the speed correction setting.
+- *Recognize all live audio sources* is now an advanced setting, after *Audio sources to
+  recognize*: choosing your turntable is the normal way. If you had it on, it stays on.
 
 ### ⚠️ Worth knowing
 
-- **Music Assistant moved the Sendspin input** from the separate *Sendspin Source* plugin into the
-  Sendspin provider (Nightly of 2026-11-19 and later). A turntable you selected under the old
+- **Music Assistant moved the Sendspin input** from the *Sendspin Source* plugin into the Sendspin
+  provider (Nightly of 2026-11-19 and later, and 2.11.0b10). A turntable selected under the old
   plugin keeps being recognized; re-select it once under *Audio sources to recognize* to make that
   permanent. *Allow analysis of the audio input* (on by default) is a setting of the Sendspin
   player that has the input.
-- Tracks learned before this version have no stored length yet. They get one through the extra
-  AudD request above, the first time you play them again: expect about one AudD request per
-  known track, once.
+- Tracks learned before this version have no stored length yet: expect about one AudD request
+  per known track, once, the first time you play it again.
 
 ## 0.8.0 (2026-11-18)
 

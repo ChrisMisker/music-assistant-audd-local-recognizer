@@ -1,8 +1,8 @@
 # AGENTS.md
 
-> Project context, design decisions and workflow are in **CLAUDE.md**; plans and ideas in
-> **ROADMAP.md**. Read both first. The rules below come from the Music Assistant community
-> provider template and apply to this repository.
+> The maintainer keeps project context and plans in local notes (CLAUDE.md, ROADMAP.md) that are
+> not published; read them first when they are present. The rules below come from the Music
+> Assistant community provider template and apply to this repository.
 
 This repository is a community provider for Music Assistant, an async Python server that plays
 music from streaming services and libraries on the user's own speakers. Servers install it from the

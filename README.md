@@ -10,11 +10,23 @@ recognized **locally**, without any external service.
 > ⚠️ **Status: experimental.** It works on real vinyl and is tested end to end, but it has
 > known limitations (see below). Feedback is welcome.
 >
-> **For now it requires Music Assistant Nightly.** The live-source analysis it depends on is
-> not in a stable or beta release yet. It will work on stable once Music Assistant ships that
-> feature there.
+> **It requires Music Assistant 2.11 beta (2.11.0b10 or later) or Nightly.** The live-source
+> analysis it depends on is not in a stable release yet. Developed and tested on Nightly; the beta
+> contains the same feature. It will work on stable once Music Assistant ships it there.
 
 ## What's new
+
+**0.9.0**
+- **Records without silence between tracks** (live albums, continuous sides) and **long pieces**
+  now work: the provider uses the track length to find the end, corrects itself when the next
+  track is recognized, and learns pieces of up to 30 minutes whole.
+- **Where you are in the song:** a progress bar with position and length, also after you drop the
+  needle in the middle of a track (the position follows within 10–20 seconds).
+- **Fewer wrong titles and duplicates:** stricter local matching, no false track ends from another
+  edit of a recording, and names that differ only in punctuation or edition are one track.
+- **AudD finds more:** retries alternate the speed correction by ±1 %, at no extra requests.
+- ⚠️ Works on the **2.11 beta** too now. Known tracks get one AudD request each, once, to learn
+  their length. See [Tips for the best results](#tips-for-the-best-results).
 
 **0.8.0** (2026-11-18)
 - **Records you played before are recognized locally more often and faster:** on a real turntable
@@ -33,8 +45,6 @@ recognized **locally**, without any external service.
   [Questions](#questions).
 - Faster local recognition when you replay a record; the database stays small (two plays per
   track); updates can't break the database; album art fixes; debugging options.
-
-**0.6.0**: first public release.
 
 All changes: [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/ChrisMisker/music-assistant-audd-local-recognizer/releases).
@@ -56,20 +66,21 @@ The more you play, the fewer AudD requests are needed.
 ## What to expect
 
 Recognition is not instant: the provider needs to hear a piece of each track first. Measured on
-a real turntable (November 2026, version 0.8, AudD speed correction set for that turntable):
+a real turntable (November 2026, version 0.9, about 20 sides of 9 records, AudD speed correction
+set for that turntable):
 
 | Situation | Title appears after | AudD requests |
 |---|---|---|
-| **A track you have never played** (identified by AudD) | usually **~27 seconds** | usually 1 |
-| **A track you have played before** (recognized locally) | usually **13–20 seconds** (8 of 11 tracks; average ~16 s) | 0 |
-| **A played-before track that isn't recognized locally** | ~27 seconds, via AudD (it is learned again) | 1 |
-| **A track AudD doesn't identify** | not shown; the provider keeps trying sparingly | 3–5 for a normal track |
+| **A track you have never played** (identified by AudD) | usually **27–33 seconds**; on some records 1–2.5 minutes | usually 1; on some records 2–5 |
+| **A track you have played before** (recognized locally) | usually **13–20 seconds** (e.g. 24 of 24 tracks of one record, 10 of 10 of another) | 0 |
+| **The needle dropped in the middle of a known track** | 14–26 seconds; the position in the song 8–14 seconds later | 0 |
+| **A track AudD doesn't identify** | not shown; the provider keeps trying sparingly | up to 20 per track |
 
-**Honest note:** some recordings sound different enough on every play that local recognition
-misses them and AudD is asked again (3 of 11 known tracks in our test, partly because they were
-learned before 0.8). Without the right speed correction AudD missed about **4 in 10 tracks** in
-earlier tests (see [Questions](#questions)). A track that is never identified is also never
-learned, so it won't be recognized locally either.
+**Honest notes:** AudD knows some recordings only in parts (in one test only 2 of 11 stretches of
+a song were found), and how fast it answers differs per record: one LP was found at the first try
+for every track, another needed 3–4 tries per track. A track AudD never identifies is never
+learned, so it won't be recognized locally either. An unstable connection between the turntable
+input and Music Assistant (audio dropouts) costs recognitions too.
 
 Why it takes this long:
 - The first look happens after **12 seconds** of a track; after that every 6 seconds.
@@ -80,8 +91,8 @@ Why it takes this long:
   counts). This avoids showing a wrong title.
 
 So: **the first time you play a record, expect about half a minute per track before the title
-shows (and usually one AudD request). The next times most tracks are recognized locally within
-about 15–20 seconds, for free.** These figures will be updated as more records are tested.
+shows (usually one AudD request). The next times tracks are recognized locally within about
+15–20 seconds, for free.**
 
 ## Tips for the best results
 
@@ -112,8 +123,8 @@ What we learned from many test sessions on a real turntable:
 
 ## Requirements
 
-- **Music Assistant Nightly** (2.11 development builds from November 2026 or later). **For now
-  this is required:** analysing live audio sources is not in a stable or beta release yet.
+- **Music Assistant 2.11 beta (2.11.0b10 or later) or Nightly** (2.11 development builds from
+  November 2026 or later). Analysing live audio sources is not in a stable release yet.
 - A **live audio source that allows audio analysis**, for example the line-in of a
   *Sendspin* device (the separate *Sendspin Source* plugin in older Nightlies) or *VBAN Receiver*.
 - An **AudD API token**, needed to identify music that hasn't been learned yet (see below).
@@ -213,18 +224,16 @@ minimum gap).
 
 ## Limitations
 
-These are known and documented on purpose. Some are being worked on (see [ROADMAP.md](ROADMAP.md)).
+These are known and documented on purpose. Some are being worked on.
 
 - **Records without silence between tracks are only partly supported** (live albums, continuous
   sides, crossfades, DJ mixes). Without a gap the provider can't hear the track change. Since 0.9
   it uses the track length that AudD reports: it stops learning a few seconds before the track
   should end, and a few seconds after that it starts listening for the next track, gap or not.
-  The previous title stays on screen until the next track is recognized. Limits: tracks learned
-  before 0.9 have no stored length until AudD identifies them again, so a local recognition of
-  such a track has no end guard; if AudD's version of a track is longer than the one on your
-  record, a few seconds of the next track can still be learned under the previous name; real DJ
-  mixes and long crossfades are not handled. There is no way yet to remove wrongly learned tracks
-  (see below).
+  When the next track is recognized, the provider corrects where the previous one really ended,
+  and lengths measured on your record replace AudD's. Limits: until a track's length is measured,
+  a few seconds of the next track can be learned under the previous name; real DJ mixes and long
+  crossfades are not handled.
 - **One long track** (for example a 20-minute classical piece) works: it is recognized once and
   learned to its end when its start and length are known (up to 30 minutes); otherwise learning
   stops after 10 minutes.
@@ -317,6 +326,6 @@ priority so that playback never suffers. It recovers by itself once the host is 
 
 Release history: [CHANGELOG.md](CHANGELOG.md).
 
-See [CLAUDE.md](CLAUDE.md) for architecture, design decisions and the development
-workflow, and [ROADMAP.md](ROADMAP.md) for plans and known issues. Tests run without Music
-Assistant installed: `uv sync && uv run pytest`.
+Tests run without Music Assistant installed: `uv sync && uv run pytest`. The `scripts/` folder
+holds the maintainer's tools (deploy to a test server, fetch logs and recordings, offline replays
+and regression runs); configure them with `.deploy.env` (see `.deploy.env.example`).

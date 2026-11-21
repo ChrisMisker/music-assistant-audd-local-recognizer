@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CACHE="${MA_TYPES_CACHE:-$HOME/.cache/audd-local-recognizer/ma-types}"
-COMMIT="$(grep -o 'music-assistant/server@[0-9a-f]\{40\}' pyproject.toml | cut -d@ -f2)"
+COMMIT="${MA_SERVER_REF:-$(grep -o 'music-assistant/server@[0-9a-f]\{40\}' pyproject.toml | cut -d@ -f2)}"  # MA_SERVER_REF=2.11.0b10 checks a release
 [[ -n "$COMMIT" ]] || { echo "no server pin in pyproject.toml" >&2; exit 1; }
 SERVER="$CACHE/server-$COMMIT"
 
