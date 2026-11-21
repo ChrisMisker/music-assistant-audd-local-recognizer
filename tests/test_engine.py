@@ -65,8 +65,10 @@ def _candidate(track: int, votes: int, ratio: float) -> QueryMatch:
 
 
 def test_match_confirmer_rules() -> None:
+    # 5 votes in one window is not enough at once (a wrong track reached 5 live, 2026-11-21)
+    assert MatchConfirmer().consider(_candidate(1, 5, 0.9)) is Decision.PENDING
     confirmer = MatchConfirmer()
-    assert confirmer.consider(_candidate(1, 5, 0.6)) is Decision.ACCEPT_STRONG
+    assert confirmer.consider(_candidate(1, 6, 0.6)) is Decision.ACCEPT_STRONG
     assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.PENDING
     assert confirmer.consider(_candidate(1, 3, 0.6)) is Decision.ACCEPT_CONFIRMED
     # a different track restarts the consecutive run

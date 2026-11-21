@@ -144,8 +144,12 @@ AUDD_INITIAL_BACKOFF_SECONDS = 60
 AUDD_MAX_BACKOFF_SECONDS = 900
 
 # Local match acceptance. A strong candidate identifies at once; a credible one must be the
-# same track on consecutive attempts. Random collisions give 0-1 votes.
-STRONG_VOTES = 5
+# same track on consecutive attempts. Random collisions mostly give 1-3 votes; the best wrong
+# track of a lookup is the maximum over the whole database, so it grows (slowly) with every
+# record learned: offline max 4 over all recent recordings, and on 2026-11-21 one live lookup gave
+# a wrong track 5 votes (Percy Sledge shown as Kurt Vile). Strong needs 6: the 5-vote genuine hits
+# (6 of ~70 offline) are then accepted a lookup later (the overnight ablation saw no difference).
+STRONG_VOTES = 6
 STRONG_RATIO = 0.60
 CONFIRM_VOTES = 3
 CONFIRM_RATIO = 0.60
