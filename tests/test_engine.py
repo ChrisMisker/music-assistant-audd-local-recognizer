@@ -26,6 +26,7 @@ from tests.conftest import music, silence
 
 GAP = 3  # seconds of silence between tracks (min gap is 2 s)
 LIFT = 6  # seconds without music when the needle is lifted and put down again
+QUIET_MOMENT = 2  # a quiet moment inside a song: the gap is confirmed and the music is back
 
 
 def current_passage_id(h: Any) -> str:
@@ -991,7 +992,7 @@ async def test_a_real_gap_gives_an_observed_length_but_a_dropout_does_not(
     await h.play(1, 28, start=32)
     assert messages(caplog, "Stream dropout: 2.0s of digital silence ignored")
     assert messages(caplog, "Track boundary") == []
-    await h.quiet(GAP)  # quiet hiss: a real gap after 60 s of song
+    await h.quiet(LIFT)  # quiet hiss: a real gap after 60 s of song
     assert messages(caplog, "Track 1: observed length 60s noted")
 
 
@@ -1002,7 +1003,7 @@ async def test_a_lifted_needle_is_only_noted(
     caplog.set_level(logging.INFO)
     h = make_harness(durations={1: 300})
     await h.play(1, 60)
-    await h.quiet(GAP)  # the needle is lifted 240 s before the end
+    await h.quiet(LIFT)  # the needle is lifted 240 s before the end
     assert messages(caplog, "Track 1: observed length 60s noted")
     assert (h.db.track_metadata(1) or {})["duration_seconds"] == 300
 
@@ -1191,11 +1192,11 @@ async def test_a_gap_inside_a_song_keeps_audds_position(
     caplog.set_level(logging.INFO)
     h = make_harness(durations={1: 300})
     await h.play(1, 30)  # identified by AudD at 24 s: the song started with the passage
-    await h.quiet(GAP)
-    await h.play(1, 80, start=30 + GAP)  # the same song goes on after the quiet moment
+    await h.quiet(QUIET_MOMENT)
+    await h.play(1, 80, start=30 + QUIET_MOMENT)  # the same song goes on after the quiet moment
     assert messages(caplog, "probably another edit's timecode") == []
     assert messages(caplog, "continues the play before the gap")
-    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 267s (song started at -33s")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 268s (song started at -32s")
 
 
 async def test_a_quiet_moment_inside_a_song_continues_its_position(
@@ -1209,13 +1210,28 @@ async def test_a_quiet_moment_inside_a_song_continues_its_position(
     await h.play(2, 40)
     await h.quiet(LIFT)
     await h.play(1, 30)  # a new play from the start: exact, stored
-    await h.quiet(GAP)  # a quiet moment (the music resumes right after the gap is confirmed)
-    await h.play(1, 80, start=30 + GAP)
+    await h.quiet(
+        QUIET_MOMENT
+    )  # a quiet moment (the music resumes right after the gap is confirmed)
+    await h.play(1, 80, start=30 + QUIET_MOMENT)
     found = messages(caplog, "continues the play before the gap") + messages(
         caplog, "confirmed as the continuation"
     )
     assert found
-    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 267s (song started at -33s")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 268s (song started at -32s")
+
+
+async def test_a_quiet_moment_inside_a_song_is_not_its_length(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Hard Day, 2026-11-21): the quiet moment at 0:25 noted lengths of 19-23 s."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(1, 30)
+    await h.quiet(QUIET_MOMENT)  # the music resumes right after the gap is confirmed
+    await h.play(1, 60, start=30 + QUIET_MOMENT)
+    assert messages(caplog, "was a quiet moment inside Artist 1 - Song 1: no length observed")
+    assert messages(caplog, "Track 1: observed length") == []
 
 
 async def test_a_stream_that_starts_mid_song_keeps_audds_position(
@@ -1237,7 +1253,7 @@ async def test_a_measured_length_is_not_scaled_by_the_speed_correction(
     h = make_harness(durations={1: 80, 2: 600}, audd_speed_percent=-2.0)
     for _ in range(2):
         await h.play(1, 60)
-        await h.quiet(GAP, level=3)
+        await h.quiet(LIFT, level=3)
     assert messages(caplog, "Track 1: observed length 60s adopted")
     metadata = h.db.track_metadata(1) or {}
     assert metadata["duration_seconds"] == pytest.approx(60, abs=1)  # as measured, not 61.2

@@ -650,6 +650,9 @@ class RecognitionEngine:
         # the last identified play that closed: (track id, song start in stream seconds)
         self.last_play: tuple[int, float] | None = None
         self.last_close_at = 0.0  # stream seconds when the last passage closed
+        # a length measured at a gap, kept until the next passage shows the gap was not a quiet
+        # moment inside the same song (Hard Day's 0:25 noted 22.6 and 18.8 s, 2026-11-21)
+        self.pending_length: tuple[int, float] | None = None
         self.dropout_seconds = 0.0
         self.shown_passage_id: str | None = None  # passage whose track MA shows
         self.background: set[asyncio.Task[None]] = set()
@@ -690,6 +693,11 @@ class RecognitionEngine:
             self._end_at_track_end(passage)
         if self.passage is None:
             if (
+                self.pending_length is not None
+                and self.stream_seconds - self.last_close_at > CONTINUATION_MAX_RESUME_SECONDS
+            ):
+                self._commit_pending_length()  # too long a silence for a quiet moment
+            if (
                 self.shown_passage_id is not None
                 and self.gap.in_gap
                 and self.gap.silence_seconds >= WITHDRAW_AFTER_SILENCE_SECONDS
@@ -720,6 +728,7 @@ class RecognitionEngine:
 
     def close(self) -> None:
         """Stop the stream and cancel in-flight work."""
+        self._commit_pending_length()
         self.stopped = True
         self.passage = None
         if self.task is not None and not self.task.done():
@@ -747,6 +756,7 @@ class RecognitionEngine:
         self.passage = None  # in-flight tasks for it now discard their results
         if passage is None:
             return
+        self._commit_pending_length()
         self.last_close_at = self.stream_seconds
         if passage.track_id is not None and passage.song_start_at is not None:
             self.last_play = (passage.track_id, passage.opened_at + passage.song_start_at)
@@ -766,9 +776,8 @@ class RecognitionEngine:
         ):
             # the chunk that confirmed the gap is not part of the passage
             song_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
-            self._in_background(
-                self._observe_length(passage.track_id, song_end - passage.song_start_at)
-            )
+            self._commit_pending_length()
+            self.pending_length = (passage.track_id, song_end - passage.song_start_at)
 
     @staticmethod
     def _past_track_end(passage: Passage) -> bool:
@@ -1303,6 +1312,20 @@ class RecognitionEngine:
             passage.short_id,
             passage.audd_attempts,
         )
+        if self.pending_length is not None:
+            if (
+                self.pending_length[0] == track_id
+                and passage.after_gap
+                and passage.opened_at - self.last_close_at <= CONTINUATION_MAX_RESUME_SECONDS
+            ):
+                self.logger.info(
+                    "The gap before passage %s was a quiet moment inside %s: no length observed",
+                    passage.short_id,
+                    describe(metadata),
+                )
+                self.pending_length = None
+            else:
+                self._commit_pending_length()
         passage.track_id = track_id
         passage.metadata = metadata
         passage.confirmer.reset()
@@ -1395,6 +1418,13 @@ class RecognitionEngine:
             raise
         except Exception:
             self.logger.exception("Could not correct track timing (passage %s)", passage.short_id)
+
+    def _commit_pending_length(self) -> None:
+        """Record the length measured at the last gap (it was a real end, not a quiet moment)."""
+        if self.pending_length is not None:
+            track_id, seconds = self.pending_length
+            self.pending_length = None
+            self._in_background(self._observe_length(track_id, seconds))
 
     async def _observe_length(self, track_id: int, played_seconds: float) -> None:
         """
