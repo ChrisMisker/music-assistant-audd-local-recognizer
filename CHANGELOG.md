@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0 (2026-11-21)
 
 Records without silence between tracks, live records, long pieces and needle drops now work much
 better; fewer wrong titles and duplicates; and the provider shows where you are in the song.

@@ -16,7 +16,7 @@ recognized **locally**, without any external service.
 
 ## What's new
 
-**0.9.0**
+**0.9.0** (2026-11-21)
 - **Records without silence between tracks** (live albums, continuous sides) and **long pieces**
   now work: the provider uses the track length to find the end, corrects itself when the next
   track is recognized, and learns pieces of up to 30 minutes whole.
