@@ -17,3 +17,9 @@ __pycache__/
 debug-samples/
 # input recordings fetched from the server (audio of your records: never commit)
 debug-recordings/
+# the maintainer's local notes (project context, plans, measurements, upstream watch state):
+# never published (2026-11-21)
+CLAUDE.md
+ROADMAP.md
+docs/measurements/
+docs/upstream-checked.txt
