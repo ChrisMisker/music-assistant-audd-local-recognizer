@@ -25,6 +25,7 @@ from audd_local_recognizer.fingerprints import QueryMatch
 from tests.conftest import music, silence
 
 GAP = 3  # seconds of silence between tracks (min gap is 2 s)
+LIFT = 6  # seconds without music when the needle is lifted and put down again
 
 
 def current_passage_id(h: Any) -> str:
@@ -1114,7 +1115,7 @@ async def test_a_weak_far_position_after_a_gap_is_not_trusted(
     h = make_harness(durations={1: 300}, sparse_every=3)  # a new play: few votes per window
     await h.play(1, 60, start=100)  # the stream starts mid-song: AudD puts the start at -100 s
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s")
-    await h.quiet(GAP)
+    await h.quiet(LIFT)
     await h.play(1, 30, start=100)  # the same stretch after a gap: a weak local position
     assert messages(caplog, "Position of Artist 1 - Song 1 uncertain")
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 300s (song started at 0s")
@@ -1194,6 +1195,26 @@ async def test_a_gap_inside_a_song_keeps_audds_position(
     await h.play(1, 80, start=30 + GAP)  # the same song goes on after the quiet moment
     assert messages(caplog, "probably another edit's timecode") == []
     assert messages(caplog, "continues the play before the gap")
+    assert messages(caplog, "Expected end of Artist 1 - Song 1 at 267s (song started at -33s")
+
+
+async def test_a_quiet_moment_inside_a_song_continues_its_position(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Hard Day live, 2026-11-21): a loop put the continued song at 3:43, not 0:25."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300}, sparse_every=3)
+    await h.play(1, 60, start=100)  # learned with an exact start (AudD timecode)
+    await h.quiet(LIFT)
+    await h.play(2, 40)
+    await h.quiet(LIFT)
+    await h.play(1, 30)  # a new play from the start: exact, stored
+    await h.quiet(GAP)  # a quiet moment (the music resumes right after the gap is confirmed)
+    await h.play(1, 80, start=30 + GAP)
+    found = messages(caplog, "continues the play before the gap") + messages(
+        caplog, "confirmed as the continuation"
+    )
+    assert found
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 267s (song started at -33s")
 
 

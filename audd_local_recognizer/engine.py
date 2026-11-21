@@ -205,6 +205,17 @@ RELIABLE_POSITION_VOTES = 12
 LATER_POSITION_LOOKUPS = 20
 # a passage after a gap whose AudD song start matches the play before the gap: the same song
 CONTINUATION_TOLERANCE_SECONDS = 5
+# A local hit after a gap that split this same song (Hard Day's quiet moment at 0:25, 2026-11-21):
+# the song goes on where the play before the gap was, which a loop-based song can contradict with
+# a stronger cluster elsewhere (decided at 3:43 instead of 0:25 live). The continuation is shown at
+# once and adopted once positioned plays give it CONTINUATION_CONFIRM_VOTES; another position only
+# after CONTINUATION_PATIENCE_LOOKUPS lookups without any support for it (a needle moved within
+# the same song).
+# A quiet moment inside a song resumes right after the gap is confirmed (Hard Day: 1 s after the
+# close), a lifted needle later (the needle drops of 2026-11-20: ~3 s): only the former continues.
+CONTINUATION_MAX_RESUME_SECONDS = 1.5
+CONTINUATION_CONFIRM_VOTES = 3
+CONTINUATION_PATIENCE_LOOKUPS = 5
 POSITION_LEAD_FACTOR = 2
 POSITION_RIVAL_SECONDS = 5
 # A 12 s window at 6.25% density holds ~260 landmarks on real vinyl (9-390 measured). A window
@@ -419,14 +430,10 @@ class TimelineEvidence:
                     best = candidate
         return best
 
-    def song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
-        """
-        Return the strongest song start of a track, from the plays with a stored song start.
-
-        A shift maps a reference play onto this passage, so the song started at the reference
-        play's song start minus the shift; plays without a stored start cannot say where the song
-        is and are left out (their passage start is not the song start after a needle drop).
-        """
+    def _song_start_clusters(
+        self, track_id: int, song_starts: dict[str, Any]
+    ) -> list[tuple[int, int, int]]:
+        """Return (votes, lookups, song start bin) per song start of a track (positioned plays)."""
         merged: dict[int, dict[tuple[str, str], set[int]]] = {}
         for (track, passage_id), bins in self._bins.items():
             start = song_starts.get(passage_id)
@@ -444,6 +451,17 @@ class TimelineEvidence:
                 for key, seen in merged.get(index, {}).items():
                     votes.setdefault(key, set()).update(seen)
             clusters.append((len(votes), len(set().union(*votes.values())), center))
+        return clusters
+
+    def song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
+        """
+        Return the strongest song start of a track, from the plays with a stored song start.
+
+        A shift maps a reference play onto this passage, so the song started at the reference
+        play's song start minus the shift; plays without a stored start cannot say where the song
+        is and are left out (their passage start is not the song start after a needle drop).
+        """
+        clusters = self._song_start_clusters(track_id, song_starts)
         if not clusters:
             return None
         votes_best, lookups, center = max(clusters)
@@ -456,6 +474,19 @@ class TimelineEvidence:
             default=0,
         )
         return SongPosition(center * COHERENCE_BIN_SECONDS, votes_best, lookups, rival)
+
+    def votes_near(
+        self, track_id: int, song_starts: dict[str, Any], start_seconds: float, tolerance: float
+    ) -> int:
+        """Return the votes of the strongest song start within tolerance of start_seconds."""
+        return max(
+            (
+                v
+                for v, _, c in self._song_start_clusters(track_id, song_starts)
+                if abs(c * COHERENCE_BIN_SECONDS - start_seconds) <= tolerance
+            ),
+            default=0,
+        )
 
     def clear(self) -> None:
         """Drop all evidence (after an identification)."""
@@ -503,6 +534,7 @@ class Passage:
     settled: bool = False  # song start stored and the previous play corrected
     position_lookups_left: int = 0  # deciding the song start later (see LATER_POSITION_*)
     audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
+    continuation_start: float | None = None  # song start if it goes on from before the gap
 
     @property
     def short_id(self) -> str:
@@ -617,6 +649,7 @@ class RecognitionEngine:
         self.soft_boundaries = 0
         # the last identified play that closed: (track id, song start in stream seconds)
         self.last_play: tuple[int, float] | None = None
+        self.last_close_at = 0.0  # stream seconds when the last passage closed
         self.dropout_seconds = 0.0
         self.shown_passage_id: str | None = None  # passage whose track MA shows
         self.background: set[asyncio.Task[None]] = set()
@@ -714,6 +747,7 @@ class RecognitionEngine:
         self.passage = None  # in-flight tasks for it now discard their results
         if passage is None:
             return
+        self.last_close_at = self.stream_seconds
         if passage.track_id is not None and passage.song_start_at is not None:
             self.last_play = (passage.track_id, passage.opened_at + passage.song_start_at)
         self.logger.info(
@@ -951,6 +985,15 @@ class RecognitionEngine:
                 return True
         return await self._judge_timeline(passage)
 
+    def _continuation_start(self, passage: Passage, track_id: int | None) -> float | None:
+        """Return the song start if this passage (after a gap) continues the same song, or None."""
+        if not passage.after_gap or self.last_play is None or self.last_play[0] != track_id:
+            return None
+        if passage.opened_at - self.last_close_at > CONTINUATION_MAX_RESUME_SECONDS:
+            return None  # a longer silence: the needle was lifted, not a quiet moment
+        start = self.last_play[1] - passage.opened_at
+        return start if start < 0 else None
+
     def _audd_song_start(
         self,
         passage: Passage,
@@ -1004,6 +1047,21 @@ class RecognitionEngine:
     ) -> tuple[float | None, bool]:
         """Return (song start, exact?) for a local match, distrusting weak far positions."""
         start, exact = _local_song_start(metadata, coherence)
+        track_id = coherence.track_id if coherence is not None else None
+        continuation = self._continuation_start(passage, track_id)
+        if (
+            continuation is not None
+            and start is not None
+            and abs(start - continuation) <= CONTINUATION_TOLERANCE_SECONDS
+        ):
+            self.logger.info(
+                "%s continues the play before the gap (song started %.0fs before this "
+                "passage) (passage %s)",
+                describe(metadata),
+                -start,
+                passage.short_id,
+            )
+            return start, True
         if (
             start is not None
             and coherence is not None
@@ -1011,6 +1069,20 @@ class RecognitionEngine:
             and start < -LOCAL_START_PRIOR_SECONDS
             and coherence.votes < RELIABLE_POSITION_VOTES
         ):
+            if continuation is not None:
+                # the gap split this song (a quiet moment): it goes on, whatever a loop says
+                passage.continuation_start = continuation
+                self.logger.info(
+                    "Position of %s uncertain (song start %.0fs from %d votes) in a passage that "
+                    "began after a gap; it probably continues the play before the gap (song start "
+                    "%.0fs): to be confirmed (passage %s)",
+                    describe(metadata),
+                    start,
+                    coherence.votes,
+                    continuation,
+                    passage.short_id,
+                )
+                return continuation, False
             self.logger.info(
                 "Position of %s uncertain (song start %.0fs from %d votes) in a passage that "
                 "began after a gap: assuming the song started with it (passage %s)",
@@ -1459,8 +1531,27 @@ class RecognitionEngine:
             return
         passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
         metadata = passage.metadata or {}
-        position = passage.evidence.song_start(passage.track_id, metadata.get(SONG_STARTS) or {})
-        if position is None or not position.decisive:
+        starts = metadata.get(SONG_STARTS) or {}
+        position = passage.evidence.song_start(passage.track_id, starts)
+        if passage.continuation_start is not None:
+            support = passage.evidence.votes_near(
+                passage.track_id,
+                starts,
+                passage.continuation_start,
+                CONTINUATION_TOLERANCE_SECONDS,
+            )
+            if support >= CONTINUATION_CONFIRM_VOTES:
+                position = SongPosition(passage.continuation_start, support, 0, 0)
+                self.logger.info(
+                    "Position of %s confirmed as the continuation of the play before the gap "
+                    "(%d votes) (passage %s)",
+                    describe(metadata),
+                    support,
+                    passage.short_id,
+                )
+            elif support > 0 or passage.evidence.lookups < CONTINUATION_PATIENCE_LOOKUPS:
+                position = None  # wait: a loop elsewhere in the song must not win this early
+        if position is None or (not position.decisive and position.lookups):
             if passage.position_lookups_left == 0:
                 passage.evidence.clear()
                 self.logger.info(
