@@ -1177,19 +1177,27 @@ class RecognitionEngine:
         if passage.audd_postponed >= MAX_AUDD_POSTPONES:
             return False
         latest = passage.confirmer.latest
-        if latest is None or latest[1] < POSTPONE_MIN_VOTES:
-            return False  # no promising candidate
+        track_id = latest[0] if latest and latest[1] >= POSTPONE_MIN_VOTES else None
+        coherence = passage.evidence.best(track_id)
+        if track_id is None:
+            # or a cluster that would be accepted but for its ordinary votes (a genuine one mostly
+            # gets them a lookup later: regression 2026-11-22, 5 of 170 local hits went to AudD)
+            if (
+                coherence is None
+                or coherence.votes < coherent_votes_required(passage.evidence.lookups)
+                or coherence.lookups < COHERENT_LOOKUPS
+            ):
+                return False  # no promising candidate
+            track_id = coherence.track_id
         if self._audd_wait_reason(passage) is not None:
             return False  # AudD isn't due anyway
         passage.audd_postponed += 1
-        coherence = passage.evidence.best(latest[0])
-        votes = coherence.votes if coherence else latest[1]
         self.logger.info(
             "AudD postponed (%d/%d): local candidate track %d has %d votes so far (passage %s)",
             passage.audd_postponed,
             MAX_AUDD_POSTPONES,
-            latest[0],
-            votes,
+            track_id,
+            coherence.votes if coherence else (latest[1] if latest else 0),
             passage.short_id,
         )
         return True

@@ -792,6 +792,20 @@ async def test_audd_is_postponed_only_for_a_promising_candidate(make_harness: An
     assert passage.audd_postponed == eng.MAX_AUDD_POSTPONES
 
 
+async def test_audd_waits_for_the_ordinary_votes_of_a_cluster(make_harness: Any) -> None:
+    """A cluster with the votes but not yet the ordinary ones gets one more lookup (max 2)."""
+    h = make_harness()
+    h.engine.postpone_audd = True
+    h.engine.feed(music(1, 0))
+    passage = _due_passage(h)
+    passage.evidence = _evidence_of([_dense_only(n) for n in range(5)], dense=True)
+    assert not h.engine._postpone_audd(passage)  # 5 votes: not enough
+    passage.evidence = _evidence_of([_dense_only(n) for n in range(6)], dense=True)
+    assert h.engine._postpone_audd(passage)
+    assert h.engine._postpone_audd(passage)
+    assert not h.engine._postpone_audd(passage)
+
+
 async def test_audd_is_not_postponed_when_it_is_not_due(make_harness: Any) -> None:
     h = make_harness()
     h.engine.postpone_audd = True
