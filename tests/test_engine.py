@@ -109,6 +109,67 @@ def test_the_time_consistent_bar_rises_with_the_number_of_lookups() -> None:
     assert eng.coherent_votes_required(27) < 10  # a genuine live-LP hit: 10 votes at 27 lookups
 
 
+def _ordinary(n: int) -> str:
+    """Return a hash an ordinary (1/16) window holds."""
+    return f"{16 * n:016x}"
+
+
+def _dense_only(n: int) -> str:
+    """Return a hash only a dense (1/4, fast start) window holds."""
+    return f"{16 * n + 4:016x}"
+
+
+def _evidence_of(hashes: list[str], *, dense: bool) -> TimelineEvidence:
+    """Spread the hashes over two lookups at one time shift."""
+    evidence = TimelineEvidence(frame_seconds=1.0)
+    for half in (hashes[: len(hashes) // 2], hashes[len(hashes) // 2 :]):
+        evidence.add(
+            {h: [0] for h in half},
+            _rows(1, "ref", [(h, 30.0) for h in half]),
+            0.0,
+            dense=dense,
+        )
+    return evidence
+
+
+def test_dense_votes_alone_do_not_make_a_time_consistent_match() -> None:
+    """Of 7 votes in fast-start windows, 3 ordinary ones are not enough evidence; 4 are."""
+    few = [_ordinary(n) for n in range(1, 4)] + [_dense_only(n) for n in range(4)]
+    evidence = _evidence_of(few, dense=True)
+    best = evidence.best()
+    assert best is not None
+    assert (best.votes, best.ordinary_votes) == (7, 3)
+    assert evidence.best(min_ordinary=eng.COHERENT_ORDINARY_VOTES) is None
+    enough = [_ordinary(n) for n in range(1, 5)] + [_dense_only(n) for n in range(3)]
+    accepted = _evidence_of(enough, dense=True).best(min_ordinary=eng.COHERENT_ORDINARY_VOTES)
+    assert accepted is not None
+    assert accepted.ordinary_votes == 4
+
+
+def test_without_fast_start_every_vote_is_ordinary() -> None:
+    best = _evidence_of([_dense_only(n) for n in range(6)], dense=False).best(min_ordinary=4)
+    assert best is not None
+    assert (best.votes, best.ordinary_votes) == (6, 6)
+
+
+async def test_a_dense_cluster_is_not_identified_until_it_has_ordinary_votes(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The live false hits of 2026-11-22 (6-7 dense votes): no identification."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(fast_start_seconds=30)
+    await h.play(1, 60)  # track 1 exists now
+    await h.quiet(GAP)
+    await h.play(9, 1)
+    passage = h.engine.passage
+    passage.evidence = _evidence_of([_dense_only(n) for n in range(7)], dense=True)
+    passage.evidence.lookups = 3
+    assert not await h.engine._judge_timeline(passage)
+    for n in range(1, 5):
+        passage.evidence.add({_ordinary(n): [0]}, _rows(1, "ref", [(_ordinary(n), 30.0)]), 0.0)
+    assert await h.engine._judge_timeline(passage)
+
+
 def test_evidence_at_random_shifts_never_adds_up() -> None:
     """Accidental 2-vote windows over a whole long passage stay at 2 coherent votes."""
     evidence = TimelineEvidence(frame_seconds=1.0)

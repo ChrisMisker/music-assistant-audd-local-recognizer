@@ -40,6 +40,7 @@ from .fingerprints import (
     Fingerprints,
     PcmFormat,
     QueryMatch,
+    density_subset,
     pcm_dbfs,
     pcm_to_wav,
     sample_stats,
@@ -175,6 +176,11 @@ COHERENT_VOTES = 6
 COHERENT_VOTES_BASE = 5
 COHERENT_LOOKUPS_PER_EXTRA_VOTE = 6
 COHERENT_LOOKUPS = 2  # from at least this many lookups (a single window is judged above)
+# ...and at least this many of those votes must come from ordinary (1/16) fingerprints: the dense
+# ones of fast start (1/4) make more accidental votes. Measured 2026-11-22 by looking up 318
+# recorded tracks in a database without them: 7 false hits, all with 6-7 votes at 18-42 s and at
+# most 3 ordinary ones; with 4 none, and no genuine hit lost (24 of 240 came 15 s later on average).
+COHERENT_ORDINARY_VOTES = 4
 COHERENCE_BIN_SECONDS = 0.05
 COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 
@@ -344,6 +350,7 @@ class Coherence:
     lookups: int  # lookups that contributed to them
     latest_votes: int  # of which found by the newest lookup
     shift_seconds: float  # reference passage time minus this passage's time
+    ordinary_votes: int = 0  # of the votes, those from ordinary (not only dense) fingerprints
 
 
 @dataclass(frozen=True)
@@ -380,6 +387,8 @@ class TimelineEvidence:
         self.lookups = 0
         # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there
         self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
+        # hashes only a dense (fast start) window holds, not an ordinary one
+        self._dense_only: set[str] = set()
 
     def add(
         self,
@@ -388,10 +397,17 @@ class TimelineEvidence:
         query_start_seconds: float,
         *,
         new_lookup: bool = True,
+        dense: bool = False,
     ) -> None:
-        """Add one lookup (or, with new_lookup=False, another phase of the same lookup)."""
+        """
+        Add one lookup (or, with new_lookup=False, another phase of the same lookup).
+
+        dense tells that the query was fingerprinted at fast start's higher density.
+        """
         if new_lookup or self.lookups == 0:
             self.lookups += 1
+        if dense:
+            self._dense_only.update(query.keys() - density_subset(query, DENSITY_DIVISOR).keys())
         for row in rows:
             for query_position in query.get(row.fingerprint_hash, ()):
                 shift = (
@@ -403,8 +419,8 @@ class TimelineEvidence:
                 seen = bins.setdefault(round(shift / COHERENCE_BIN_SECONDS), {})
                 seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
 
-    def best(self, track_id: int | None = None) -> Coherence | None:
-        """Return the strongest cluster (of one track if given), or None."""
+    def best(self, track_id: int | None = None, min_ordinary: int = 0) -> Coherence | None:
+        """Return the strongest cluster (of one track, or with enough ordinary votes), or None."""
         best: Coherence | None = None
         for (track, passage_id), bins in sorted(self._bins.items()):
             if track_id is not None and track != track_id:
@@ -422,7 +438,10 @@ class TimelineEvidence:
                     len(lookups),
                     sum(1 for seen in hashes.values() if self.lookups in seen),
                     center * COHERENCE_BIN_SECONDS,
+                    sum(1 for fp_hash in hashes if fp_hash not in self._dense_only),
                 )
+                if candidate.ordinary_votes < min_ordinary:
+                    continue
                 if best is None or (candidate.votes, candidate.lookups) > (
                     best.votes,
                     best.lookups,
@@ -491,6 +510,7 @@ class TimelineEvidence:
     def clear(self) -> None:
         """Drop all evidence (after an identification)."""
         self._bins.clear()
+        self._dense_only.clear()
 
 
 @dataclass(frozen=True)
@@ -857,7 +877,8 @@ class RecognitionEngine:
             local = await self._run_blocking(self._db.lookup, query, passage.id)
             if not self._is_current(passage):
                 return
-            passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
+            dense = self._divisor(window_end) < DENSITY_DIVISOR
+            passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS, dense=dense)
             local = await self._other_phases(passage, pcm, window_end, local)
             if local is None:
                 return
@@ -897,7 +918,8 @@ class RecognitionEngine:
             if not self._is_current(passage):
                 return None
             start = window_end - SAMPLE_SECONDS + skip / self.fmt.sample_rate
-            passage.evidence.add(query, found.rows, start, new_lookup=False)
+            dense = self._divisor(window_end) < DENSITY_DIVISOR
+            passage.evidence.add(query, found.rows, start, new_lookup=False, dense=dense)
             if found.best is not None and (
                 best.best is None or found.best.best_votes > best.best.best_votes
             ):
@@ -1105,7 +1127,7 @@ class RecognitionEngine:
 
     async def _judge_timeline(self, passage: Passage) -> bool:
         """Accept the strongest time-consistent cluster once it has enough evidence."""
-        coherence = passage.evidence.best()
+        coherence = passage.evidence.best(min_ordinary=COHERENT_ORDINARY_VOTES)
         if (
             coherence is None
             or coherence.votes < coherent_votes_required(passage.evidence.lookups)
