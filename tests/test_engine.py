@@ -1518,3 +1518,20 @@ async def test_a_short_new_track_after_a_soft_boundary_is_not_a_tail(
     await h.play(2, 40)  # then another, longer track without a gap: unidentified
     await h.quiet(LIFT)
     assert messages(caplog, "after the soft boundary") == []
+
+
+@pytest.mark.parametrize(("single", "at"), [(10, 12), (1000, 18)])
+async def test_a_big_cluster_needs_only_one_lookup(
+    make_harness: Any, caplog: pytest.LogCaptureFixture, monkeypatch: Any, single: int, at: int
+) -> None:
+    """Regression (Ink, 2026-11-22): 58 time-consistent votes waited a lookup for a low ratio."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(eng, "STRONG_VOTES", 1000)  # the single-window rule never fires here
+    monkeypatch.setattr(eng, "COHERENT_SINGLE_LOOKUP_VOTES", single)
+    h = make_harness()
+    await h.play(1, 60)
+    await h.quiet(GAP)
+    h.engine.close()
+    replay = make_harness(has_token=False)
+    await replay.play(1, 30)  # each 12 s window shares 12 votes with the first play
+    assert messages(caplog, f"Identified Artist 1 - Song 1 via local after {at}s")

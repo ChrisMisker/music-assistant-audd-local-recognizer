@@ -206,6 +206,11 @@ COHERENT_ORDINARY_VOTES = 4
 # votes, genuine replays of a first play learned densely reach 11-12 at 26-32 s (Everly Brothers,
 # 2026-11-23); with this, 0 false hits and 21 (not 24) of 240 genuine ones later than before.
 COHERENT_LARGE_VOTES = 10
+# A single lookup is enough for a cluster this big (with the ordinary votes above): Ink at 14 s had
+# 58 time-consistent votes but a ratio of 0.557 and waited a lookup (2026-11-22). Simulated on 410
+# passages (2026-11-23): 10 known tracks 6 s sooner, no extra false hit; the largest cluster of a
+# really different track had 9 votes.
+COHERENT_SINGLE_LOOKUP_VOTES = 20
 COHERENCE_BIN_SECONDS = 0.05
 COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 
@@ -1215,10 +1220,11 @@ class RecognitionEngine:
         coherence = passage.evidence.best(
             min_ordinary=COHERENT_ORDINARY_VOTES, large=COHERENT_LARGE_VOTES
         )
-        if (
-            coherence is None
-            or coherence.votes < coherent_votes_required(passage.evidence.lookups)
-            or coherence.lookups < COHERENT_LOOKUPS
+        if coherence is None or coherence.votes < coherent_votes_required(passage.evidence.lookups):
+            return False
+        if coherence.lookups < COHERENT_LOOKUPS and not (
+            coherence.votes >= COHERENT_SINGLE_LOOKUP_VOTES
+            and coherence.ordinary_votes >= COHERENT_ORDINARY_VOTES
         ):
             return False
         metadata = await self._run_blocking(self._db.track_metadata, coherence.track_id)

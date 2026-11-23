@@ -218,9 +218,16 @@ class Rule:
     early_until: float = 30.0
     confirm_cluster: int = 5
     fast: bool = True
+    large: int = 0  # a cluster this big needs no ordinary votes (0 = off)
+    single: int = 0  # a cluster this big needs only 1 lookup (0 = off)
+    single_sparse: int = 4  # ...if this many of its votes are ordinary
 
 
 RULES = [
+    Rule("shipped (6, >=4 sparse, large 10, single 20)", sparse_min=4, large=10, single=20),
+    Rule("without single (until 2026-11-23)", sparse_min=4, large=10),
+    Rule("single 15", sparse_min=4, large=10, single=15),
+    Rule("single 30", sparse_min=4, large=10, single=30),
     Rule("6 (before 2026-11-22)"),
     Rule("time-consistent 7", minimum=7),
     Rule("time-consistent 8", minimum=8),
@@ -267,7 +274,12 @@ def accept(trace: Trace, rule: Rule, keep: Any) -> tuple[int, str, float, int] |
         ok = [
             (c, t)
             for t, c in clusters
-            if c[0] >= floor and c[2] >= rule.lookups and c[1] >= rule.sparse_min
+            if (
+                c[0] >= floor
+                and c[2] >= rule.lookups
+                and (c[1] >= rule.sparse_min or (rule.large and c[0] >= rule.large))
+            )
+            or (rule.single and c[0] >= rule.single and c[1] >= rule.single_sparse)
         ]
         if ok:
             c, t = max(ok)
