@@ -146,6 +146,15 @@ def test_dense_votes_alone_do_not_make_a_time_consistent_match() -> None:
     assert accepted.ordinary_votes == 4
 
 
+def test_a_large_dense_cluster_needs_no_ordinary_votes() -> None:
+    """A genuine replay of a densely learned start: 11 votes, none ordinary, is accepted."""
+    evidence = _evidence_of([_dense_only(n) for n in range(11)], dense=True)
+    rule = {"min_ordinary": eng.COHERENT_ORDINARY_VOTES, "large": eng.COHERENT_LARGE_VOTES}
+    assert evidence.best(**rule) is not None
+    small = _evidence_of([_dense_only(n) for n in range(eng.COHERENT_LARGE_VOTES - 1)], dense=True)
+    assert small.best(**rule) is None
+
+
 def test_without_fast_start_every_vote_is_ordinary() -> None:
     best = _evidence_of([_dense_only(n) for n in range(6)], dense=False).best(min_ordinary=4)
     assert best is not None

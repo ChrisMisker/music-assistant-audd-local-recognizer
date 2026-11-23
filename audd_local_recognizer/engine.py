@@ -181,6 +181,10 @@ COHERENT_LOOKUPS = 2  # from at least this many lookups (a single window is judg
 # recorded tracks in a database without them: 7 false hits, all with 6-7 votes at 18-42 s and at
 # most 3 ordinary ones; with 4 none, and no genuine hit lost (24 of 240 came 15 s later on average).
 COHERENT_ORDINARY_VOTES = 4
+# ...unless the cluster is this big anyway: the largest accidental cluster in all recordings had 8
+# votes, genuine replays of a first play learned densely reach 11-12 at 26-32 s (Everly Brothers,
+# 2026-11-23); with this, 0 false hits and 21 (not 24) of 240 genuine ones later than before.
+COHERENT_LARGE_VOTES = 10
 COHERENCE_BIN_SECONDS = 0.05
 COHERENCE_BINS = 3  # a cluster spans +-3 bins: +-0.15 s (+ quantization)
 
@@ -419,8 +423,15 @@ class TimelineEvidence:
                 seen = bins.setdefault(round(shift / COHERENCE_BIN_SECONDS), {})
                 seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
 
-    def best(self, track_id: int | None = None, min_ordinary: int = 0) -> Coherence | None:
-        """Return the strongest cluster (of one track, or with enough ordinary votes), or None."""
+    def best(
+        self, track_id: int | None = None, min_ordinary: int = 0, large: int | None = None
+    ) -> Coherence | None:
+        """
+        Return the strongest cluster (of one track if given), or None.
+
+        With min_ordinary, a cluster needs that many ordinary votes, unless it has at least
+        large votes in total.
+        """
         best: Coherence | None = None
         for (track, passage_id), bins in sorted(self._bins.items()):
             if track_id is not None and track != track_id:
@@ -440,7 +451,9 @@ class TimelineEvidence:
                     center * COHERENCE_BIN_SECONDS,
                     sum(1 for fp_hash in hashes if fp_hash not in self._dense_only),
                 )
-                if candidate.ordinary_votes < min_ordinary:
+                if candidate.ordinary_votes < min_ordinary and (
+                    large is None or candidate.votes < large
+                ):
                     continue
                 if best is None or (candidate.votes, candidate.lookups) > (
                     best.votes,
@@ -1127,7 +1140,9 @@ class RecognitionEngine:
 
     async def _judge_timeline(self, passage: Passage) -> bool:
         """Accept the strongest time-consistent cluster once it has enough evidence."""
-        coherence = passage.evidence.best(min_ordinary=COHERENT_ORDINARY_VOTES)
+        coherence = passage.evidence.best(
+            min_ordinary=COHERENT_ORDINARY_VOTES, large=COHERENT_LARGE_VOTES
+        )
         if (
             coherence is None
             or coherence.votes < coherent_votes_required(passage.evidence.lookups)
