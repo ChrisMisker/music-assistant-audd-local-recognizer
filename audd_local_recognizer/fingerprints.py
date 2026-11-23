@@ -139,6 +139,29 @@ def sample_stats(pcm: bytes, fmt: PcmFormat) -> dict[str, float | None]:
     return stats
 
 
+def stream_holes(pcm: bytes, fmt: PcmFormat, min_seconds: float = 0.002) -> tuple[int, float]:
+    """
+    Count runs of exact digital zeros (all channels) of at least min_seconds in raw PCM.
+
+    A turntable never produces exact zeros: such runs are audio the stream lost on its way
+    (Wi-Fi, a busy server). Returns (number of holes, longest hole in seconds).
+    """
+    frame = fmt.sample_width * fmt.channels
+    frames = len(pcm) // frame
+    if frames == 0:
+        return 0, 0.0
+    raw = np.frombuffer(pcm, dtype=np.uint8, count=frames * frame).reshape(frames, frame)
+    zero = ~raw.any(axis=1)
+    if not zero.any():
+        return 0, 0.0
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], zero.astype(np.int8), [0]))))
+    lengths = edges[1::2] - edges[::2]
+    lengths = lengths[lengths >= max(1, round(min_seconds * fmt.sample_rate))]
+    if not lengths.size:
+        return 0, 0.0
+    return int(lengths.size), float(lengths.max()) / fmt.sample_rate
+
+
 def _channel(pcm: bytes, fmt: PcmFormat, index: int) -> bytes:
     """Return the raw bytes of one channel of interleaved stereo PCM."""
     frame = fmt.sample_width * fmt.channels

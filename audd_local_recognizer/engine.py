@@ -44,6 +44,7 @@ from .fingerprints import (
     pcm_dbfs,
     pcm_to_wav,
     sample_stats,
+    stream_holes,
 )
 
 if TYPE_CHECKING:
@@ -143,6 +144,13 @@ AUDD_SPEED_PATTERN = (0, -1, 0, 1)
 # genuine candidates at 24 s had 3 votes, accidental ones up to 2, so 2 postponed for nothing.
 POSTPONE_MIN_VOTES = 3
 MAX_AUDD_POSTPONES = 2
+# Stream holes (runs of exact digital zeros: audio lost between source and MA) defeat AudD: on
+# 2026-11-22 100 ms holes every ~6 s made it miss known audio 10 times, spliced or not, while clean
+# windows of the same track hit. A sample with a hole of at least AUDD_HOLE_MIN_SECONDS waits for
+# the next window (6 s later) instead, at most AUDD_MAX_HOLE_SKIPS times in a row, so a stream that
+# is never clean still gets AudD.
+AUDD_HOLE_MIN_SECONDS = 0.002
+AUDD_MAX_HOLE_SKIPS = 2
 # "Fast start": windows that end within the first fast_start_seconds of a passage are
 # fingerprinted at 1/4 instead of 1/16 (a superset), when learning and when looking up, so a
 # known track is recognized sooner from its start. Costs disk space; off unless configured.
@@ -575,6 +583,7 @@ class Passage:
     audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
     continuation_start: float | None = None  # song start if it goes on from before the gap
     title_checks_left: int = 0  # AudD's title came with an implausible timecode: ask again
+    audd_hole_skips: int = 0  # AudD samples skipped in a row for stream holes
 
     @property
     def short_id(self) -> str:
@@ -1240,8 +1249,14 @@ class RecognitionEngine:
             return "stream-wide minimum interval"
         return None
 
-    async def _try_audd(
-        self, passage: Passage, pcm: bytes, window_end: float, speed: float | None = None
+    async def _try_audd(  # noqa: PLR0911 - every refusal and outcome returns early
+        self,
+        passage: Passage,
+        pcm: bytes,
+        window_end: float,
+        speed: float | None = None,
+        *,
+        holes_checked: bool = False,
     ) -> dict[str, Any] | None:
         if self._audd is None:
             if not self._warned_no_token:
@@ -1253,6 +1268,8 @@ class RecognitionEngine:
             return None
         if (reason := self._audd_wait_reason(passage)) is not None:
             self.logger.debug("AudD skipped (passage %s): %s", passage.short_id, reason)
+            return None
+        if not holes_checked and self._wait_for_clean_sample(passage, pcm):
             return None
         passage.audd_attempts += 1
         fast = self.audd_thorough or passage.audd_attempts < AUDD_FAST_ATTEMPTS
@@ -1296,6 +1313,37 @@ class RecognitionEngine:
         passage.audd_hit_speed_percent = speed
         return result
 
+    def _wait_for_clean_sample(self, passage: Passage, pcm: bytes) -> bool:
+        """
+        Return True if this AudD sample has stream holes and a cleaner window should be awaited.
+
+        Call only when AudD would be asked now. Waits at most AUDD_MAX_HOLE_SKIPS windows in a
+        row; after that the sample goes anyway.
+        """
+        holes, longest = stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)
+        if holes and passage.audd_hole_skips < AUDD_MAX_HOLE_SKIPS:
+            passage.audd_hole_skips += 1
+            self.logger.info(
+                "AudD sample has %d stream hole(s) (longest %d ms): waiting for a clean window "
+                "(%d/%d, passage %s)",
+                holes,
+                round(longest * 1000),
+                passage.audd_hole_skips,
+                AUDD_MAX_HOLE_SKIPS,
+                passage.short_id,
+            )
+            return True
+        if holes:
+            self.logger.info(
+                "AudD sample has %d stream hole(s) (longest %d ms): no clean window, "
+                "sending it anyway (passage %s)",
+                holes,
+                round(longest * 1000),
+                passage.short_id,
+            )
+        passage.audd_hole_skips = 0
+        return False
+
     def _attempt_speed(self, attempt: int) -> float:
         """Return the speed correction (%) for the n-th AudD attempt of a passage (1-based)."""
         offset = AUDD_SPEED_PATTERN[(attempt - 1) % len(AUDD_SPEED_PATTERN)]
@@ -1317,6 +1365,7 @@ class RecognitionEngine:
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
                 **sample_stats(pcm, self.fmt),
+                "stream_holes": stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)[0],
             }
             await self._save_sample(wav, info)
         except Exception:
@@ -1691,6 +1740,8 @@ class RecognitionEngine:
 
     async def _check_title(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         """Ask AudD once more about a title that came with an implausible timecode."""
+        if self._wait_for_clean_sample(passage, pcm):
+            return  # the check stays due for a cleaner window
         passage.title_checks_left -= 1
         old_id, old_metadata = passage.track_id, passage.metadata
         if old_id is None or old_metadata is None:
@@ -1700,7 +1751,9 @@ class RecognitionEngine:
             describe(old_metadata),
             passage.short_id,
         )
-        hit = await self._try_audd(passage, pcm, window_end, speed=passage.audd_hit_speed_percent)
+        hit = await self._try_audd(
+            passage, pcm, window_end, speed=passage.audd_hit_speed_percent, holes_checked=True
+        )
         if hit is None or not self._is_current(passage) or passage.track_id != old_id:
             return
         if track_key(hit) in {track_key(old_metadata), *old_metadata.get(ALIASES, [])}:
@@ -1748,15 +1801,19 @@ class RecognitionEngine:
         )
         await self._settle(passage)
 
-    async def _check_duration(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+    async def _check_duration(  # noqa: PLR0911 - each reason to stop returns early
+        self, passage: Passage, pcm: bytes, window_end: float
+    ) -> None:
         """Ask AudD once for the length of a locally recognized track that has none stored."""
+        if self._wait_for_clean_sample(passage, pcm):
+            return  # the check stays due for a cleaner window
         passage.duration_checks_left -= 1
         self.logger.info(
             "Asking AudD for the length of %s (recognized locally) (passage %s)",
             describe(passage.metadata),
             passage.short_id,
         )
-        hit = await self._try_audd(passage, pcm, window_end)
+        hit = await self._try_audd(passage, pcm, window_end, holes_checked=True)
         if hit is None:
             # The track is known already: retry soon, not at the slow cadence of later attempts
             # to identify an unknown passage (the stream-wide minimum interval still applies).

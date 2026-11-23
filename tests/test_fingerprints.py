@@ -22,6 +22,7 @@ from audd_local_recognizer.fingerprints import (
     resample_s16,
     sample_stats,
     score_reference,
+    stream_holes,
 )
 
 if TYPE_CHECKING:
@@ -257,3 +258,19 @@ def test_import_quietly_hides_dependency_syntax_warnings(
         module = import_quietly("noisy_dependency")
     assert module.PATTERN == "\\("
     assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
+
+
+def test_stream_holes_counts_runs_of_digital_zeros_in_all_channels() -> None:
+    fmt = PcmFormat(1000, 2, 4, "f32le")  # 1 kHz: 1 frame = 1 ms
+    audio = np.full((100, 2), 0.01, dtype="<f4")
+    audio[10:15] = 0.0  # 5 ms hole
+    audio[40:41] = 0.0  # 1 ms: shorter than the minimum
+    audio[60:90, 0] = 0.0  # one channel only: still audio, not a hole
+    audio[95:100] = 0.0  # 5 ms hole at the end
+    assert stream_holes(audio.tobytes(), fmt, 0.002) == (2, 0.005)
+
+
+def test_stream_holes_of_clean_or_empty_audio() -> None:
+    fmt = PcmFormat(1000, 1, 2, "s16le")
+    assert stream_holes(np.full(50, 7, dtype="<i2").tobytes(), fmt) == (0, 0.0)
+    assert stream_holes(b"", fmt) == (0, 0.0)

@@ -1417,3 +1417,54 @@ async def test_a_strong_far_position_after_a_gap_is_trusted(
         len(messages(caplog, "Expected end of Artist 1 - Song 1 at 200s (song started at -100s"))
         == 2
     )
+
+
+async def play_with_holes(h: Any, song: int, seconds: int, holes: set[int], start: int = 0) -> None:
+    """Play a song where the stream lost the given song seconds (digital zeros instead)."""
+    for second in range(start, start + seconds):
+        h.engine.feed(silence(0) if second in holes else music(song, second))
+        await h.settle()
+
+
+async def test_audd_waits_for_a_window_without_stream_holes(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (side D, 2026-11-22): holes every ~6 s made AudD miss audio it knows."""
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await play_with_holes(h, 1, 40, holes={15})  # inside the first AudD sample (12-24 s)
+    assert messages(caplog, "waiting for a clean window (1/2")
+    assert len(h.audd_calls) == 1
+    assert 0 not in h.audd_calls[0]  # the sample AudD got was clean (window 18-30 s)
+    assert h.engine.passage is not None
+    assert h.engine.passage.audd_attempts == 1  # a skipped sample is not an attempt
+    assert h.published[-1]["title"] == "Song 1"
+
+
+async def test_audd_sends_a_sample_with_holes_when_no_window_is_clean(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness()
+    await play_with_holes(h, 1, 40, holes=set(range(5, 40, 5)))
+    assert len(messages(caplog, "waiting for a clean window")) == eng.AUDD_MAX_HOLE_SKIPS
+    assert messages(caplog, "no clean window, sending it anyway")
+    assert len(h.audd_calls) == 1
+    assert h.published[-1]["title"] == "Song 1"
+
+
+async def test_a_title_check_keeps_its_chance_while_the_stream_has_holes(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 210})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    wrong = {**metadata_for(5), "audd_timecode": "06:16", "duration_seconds": 466}
+    h.audd_script = [wrong]
+    calls = len(h.audd_calls)
+    await play_with_holes(h, 1, 100, holes={50})  # in the window of the check due at 54 s
+    assert messages(caplog, "waiting for a clean window")
+    assert messages(caplog, "AudD names it Artist 1 - Song 1 with a plausible position")
+    assert len(h.audd_calls) == calls + 2
+    assert h.published[-1]["title"] == "Song 1"
