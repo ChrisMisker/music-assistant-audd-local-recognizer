@@ -22,7 +22,7 @@ from audd_local_recognizer.engine import (
     TimelineEvidence,
 )
 from audd_local_recognizer.fingerprints import QueryMatch
-from tests.conftest import music, silence
+from tests.conftest import metadata_for, music, silence
 
 GAP = 3  # seconds of silence between tracks (min gap is 2 s)
 LIFT = 6  # seconds without music when the needle is lifted and put down again
@@ -1267,6 +1267,56 @@ async def test_an_audd_timecode_far_before_a_passage_after_a_gap_is_not_trusted(
     assert messages(caplog, "Expected end of Artist 1 - Song 1 at 300s (song started at 0s")
     assert messages(caplog, "Track boundary (no gap)") == []
     assert "song_starts" not in (h.db.track_metadata(1) or {})  # nothing stored as exact
+
+
+async def test_a_wrong_title_with_a_far_timecode_is_corrected_by_a_second_check(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Coldplay, 2026-11-22/23): Always In My Head named "O" at 6:16, twice."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 210})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    wrong = {**metadata_for(5), "audd_timecode": "06:16", "duration_seconds": 466}
+    h.audd_script = [wrong]  # the first answer after the gap; later ones are the real song
+    calls = len(h.audd_calls)
+    await h.play(1, 90)
+    assert messages(caplog, "AudD places Artist 5 - Song 5 352s before this passage")
+    assert messages(caplog, "Checking the title Artist 5 - Song 5 with AudD once more")
+    assert messages(caplog, "AudD names it Artist 1 - Song 1 with a plausible position")
+    assert len(h.audd_calls) == calls + 2  # one extra request
+    assert h.published[-1]["title"] == "Song 1"
+    tracks = {(h.db.track_metadata(t) or {}).get("title"): t for t in learned(h)}
+    assert set(tracks) == {"Song 1", "Song 2"}  # the wrong track is gone
+    assert {song for song, _ in learned(h)[tracks["Song 1"]]} == {1}
+
+
+async def test_a_needle_drop_title_is_confirmed_by_the_check(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A real needle drop mid-song: the second answer names the same track, nothing changes."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 90, start=100)
+    assert messages(caplog, "AudD confirms Artist 1 - Song 1")
+    assert messages(caplog, "AudD names it") == []
+    assert len(h.audd_calls) == calls + 2
+
+
+async def test_a_plausible_timecode_needs_no_title_check(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 90)
+    assert messages(caplog, "Checking the title") == []
+    assert len(h.audd_calls) == calls + 1
 
 
 async def test_a_gap_inside_a_song_keeps_audds_position(

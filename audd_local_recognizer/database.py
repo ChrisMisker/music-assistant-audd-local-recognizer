@@ -615,6 +615,33 @@ class FingerprintDatabase:
             ).rowcount
             return int(moved), int(deleted)
 
+    def reassign_passage(self, track_id: int, passage_id: str, new_track_id: int) -> int:
+        """
+        Give every window of one play to another track (AudD named it wrongly the first time).
+
+        The play's stored song start goes too; the old track is deleted when nothing is left of
+        it (it then only existed through the wrong name). Returns the number of windows moved.
+        """
+        with self._transaction() as db:
+            moved = db.execute(
+                "UPDATE reference_windows SET track_id=? WHERE track_id=? AND passage_id=?",
+                (new_track_id, track_id, passage_id),
+            ).rowcount
+            left = db.execute(
+                "SELECT COUNT(*) FROM reference_windows WHERE track_id=?", (track_id,)
+            ).fetchone()[0]
+            if not left:
+                db.execute("DELETE FROM tracks WHERE id=?", (track_id,))
+        if left:
+
+            def change(metadata: dict[str, Any]) -> None:
+                starts = dict(metadata.get(SONG_STARTS) or {})
+                starts.pop(passage_id, None)
+                metadata[SONG_STARTS] = starts
+
+            self._update_metadata(track_id, change)
+        return int(moved)
+
     def record_observed_duration(
         self, track_id: int, seconds: float, tolerance: float
     ) -> float | None:

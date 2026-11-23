@@ -102,6 +102,12 @@ WITHDRAW_AFTER_SILENCE_SECONDS = 30.0
 # length and the song position (user's choice, 2026-11-19: the extra requests are fine). Only a
 # hit with the same track key (or alias) is used; another name is ignored (local wins).
 MAX_DURATION_CHECKS_PER_PASSAGE = 2
+# An AudD hit whose timecode puts the song start far before a passage that began after a gap is
+# usually right (a needle drop, another edit: 4 of 7 cases 2026-11-20..23) but can be another track
+# that shares the audio: Coldplay's Always In My Head named "O" twice, whose hidden reprise has
+# the same intro. Such a title is shown at once and asked once more a little later (at the speed
+# of the hit); another track with a plausible song start then replaces it. About 4 % of AudD hits.
+MAX_TITLE_CHECKS_PER_PASSAGE = 1
 # Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
 # the first ~2 minutes) and stored as references once the passage is identified, so the
 # start of a track is learned too even when identification only succeeds later.
@@ -568,6 +574,7 @@ class Passage:
     position_lookups_left: int = 0  # deciding the song start later (see LATER_POSITION_*)
     audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
     continuation_start: float | None = None  # song start if it goes on from before the gap
+    title_checks_left: int = 0  # AudD's title came with an implausible timecode: ask again
 
     @property
     def short_id(self) -> str:
@@ -1083,6 +1090,7 @@ class RecognitionEngine:
                 -start,
                 passage.short_id,
             )
+            passage.title_checks_left = MAX_TITLE_CHECKS_PER_PASSAGE
             return 0.0, False
         return start, True
 
@@ -1233,7 +1241,7 @@ class RecognitionEngine:
         return None
 
     async def _try_audd(
-        self, passage: Passage, pcm: bytes, window_end: float
+        self, passage: Passage, pcm: bytes, window_end: float, speed: float | None = None
     ) -> dict[str, Any] | None:
         if self._audd is None:
             if not self._warned_no_token:
@@ -1252,7 +1260,8 @@ class RecognitionEngine:
             AUDD_FAST_INTERVAL_SECONDS if fast else AUDD_SLOW_INTERVAL_SECONDS
         )
         self.last_audd_at = self.stream_seconds
-        speed = self._attempt_speed(passage.audd_attempts)
+        if speed is None:
+            speed = self._attempt_speed(passage.audd_attempts)
         self.logger.info(
             "AudD attempt %d/%d on %ds sample at %+.1f%% (passage %s)",
             passage.audd_attempts,
@@ -1591,6 +1600,8 @@ class RecognitionEngine:
                 await self._decide_position(passage, hashes, window_end)
             if self._duration_check_due(passage, window_end):
                 await self._check_duration(passage, pcm, window_end)
+            elif self._title_check_due(passage):
+                await self._check_title(passage, pcm, window_end)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1670,6 +1681,72 @@ class RecognitionEngine:
             and self._is_current(passage)
             and self._audd_wait_reason(passage) is None
         )
+
+    def _title_check_due(self, passage: Passage) -> bool:
+        return (
+            passage.title_checks_left > 0
+            and self._is_current(passage)
+            and self._audd_wait_reason(passage) is None
+        )
+
+    async def _check_title(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+        """Ask AudD once more about a title that came with an implausible timecode."""
+        passage.title_checks_left -= 1
+        old_id, old_metadata = passage.track_id, passage.metadata
+        if old_id is None or old_metadata is None:
+            return
+        self.logger.info(
+            "Checking the title %s with AudD once more (passage %s)",
+            describe(old_metadata),
+            passage.short_id,
+        )
+        hit = await self._try_audd(passage, pcm, window_end, speed=passage.audd_hit_speed_percent)
+        if hit is None or not self._is_current(passage) or passage.track_id != old_id:
+            return
+        if track_key(hit) in {track_key(old_metadata), *old_metadata.get(ALIASES, [])}:
+            self.logger.info(
+                "AudD confirms %s (passage %s)", describe(old_metadata), passage.short_id
+            )
+            return
+        factor = self._passage_factor(passage)
+        timecode = parse_timecode(hit.get("audd_timecode"))
+        start = None if timecode is None else window_end - timecode * factor
+        if start is None or start < -LOCAL_START_PRIOR_SECONDS:
+            self.logger.info(
+                "AudD now names it %s, but not at a plausible position either: keeping %s "
+                "(passage %s)",
+                describe(hit),
+                describe(old_metadata),
+                passage.short_id,
+            )
+            return
+        new_id = await self._run_blocking(self._db.upsert_track, hit)
+        metadata = await self._run_blocking(self._db.track_metadata, new_id) or hit
+        if not self._is_current(passage) or passage.track_id != old_id or new_id == old_id:
+            return
+        moved = await self._run_blocking(self._db.reassign_passage, old_id, passage.id, new_id)
+        self.logger.info(
+            "AudD names it %s with a plausible position (song started at %.0fs): not %s; "
+            "moved %d learned windows (passage %s)",
+            describe(metadata),
+            start,
+            describe(old_metadata),
+            moved,
+            passage.short_id,
+        )
+        passage.track_end_at = None
+        passage.settled = False
+        passage.learning_capped = False
+        self._identify(
+            passage,
+            new_id,
+            metadata,
+            via="AudD (title checked)",
+            song_start_at=start,
+            song_start_exact=True,
+            duration=_track_length(metadata, hit),
+        )
+        await self._settle(passage)
 
     async def _check_duration(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         """Ask AudD once for the length of a locally recognized track that has none stored."""
