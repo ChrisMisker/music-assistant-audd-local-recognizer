@@ -151,13 +151,15 @@ AUDD_SPEED_PATTERN = (0, -1, 0, 1)
 # genuine candidates at 24 s had 3 votes, accidental ones up to 2, so 2 postponed for nothing.
 POSTPONE_MIN_VOTES = 3
 MAX_AUDD_POSTPONES = 2
-# Stream holes (runs of exact digital zeros: audio lost between source and MA) defeat AudD: on
-# 2026-11-22 100 ms holes every ~6 s made it miss known audio 10 times, spliced or not, while clean
-# windows of the same track hit. A sample with a hole of at least AUDD_HOLE_MIN_SECONDS waits for
-# the next window (6 s later) instead, at most AUDD_MAX_HOLE_SKIPS times in a row, so a stream that
-# is never clean still gets AudD.
+# Stream holes (runs of exact digital zeros: audio lost between source and MA) can defeat AudD. In
+# 318 real AudD samples (2026-11-19..23) of tracks AudD knows, the hit rate was 64 % with no hole,
+# 60 % with 1, 44-58 % with 2-4 and 25 % with 5 or more (1 of 4). A sample with at least
+# AUDD_HOLES_TO_WAIT holes waits for the next window (6 s later), at most AUDD_MAX_HOLE_SKIPS times
+# in a row. Waiting for any hole (first version, same day) cost 12 s on a third of the tracks in the
+# regression and rarely found a clean window: holes come in bursts.
 AUDD_HOLE_MIN_SECONDS = 0.002
-AUDD_MAX_HOLE_SKIPS = 2
+AUDD_HOLES_TO_WAIT = 5
+AUDD_MAX_HOLE_SKIPS = 1
 # "Fast start": windows that end within the first fast_start_seconds of a passage are
 # fingerprinted at 1/4 instead of 1/16 (a superset), when learning and when looking up, so a
 # known track is recognized sooner from its start. Costs disk space; off unless configured.
@@ -1379,13 +1381,13 @@ class RecognitionEngine:
 
     def _wait_for_clean_sample(self, passage: Passage, pcm: bytes) -> bool:
         """
-        Return True if this AudD sample has stream holes and a cleaner window should be awaited.
+        Return True if this AudD sample has many stream holes and a cleaner window should be awaited.
 
         Call only when AudD would be asked now. Waits at most AUDD_MAX_HOLE_SKIPS windows in a
         row; after that the sample goes anyway.
         """
         holes, longest = stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)
-        if holes and passage.audd_hole_skips < AUDD_MAX_HOLE_SKIPS:
+        if holes >= AUDD_HOLES_TO_WAIT and passage.audd_hole_skips < AUDD_MAX_HOLE_SKIPS:
             passage.audd_hole_skips += 1
             self.logger.info(
                 "AudD sample has %d stream hole(s) (longest %d ms): waiting for a clean window "
@@ -1397,9 +1399,9 @@ class RecognitionEngine:
                 passage.short_id,
             )
             return True
-        if holes:
+        if holes >= AUDD_HOLES_TO_WAIT:
             self.logger.info(
-                "AudD sample has %d stream hole(s) (longest %d ms): no clean window, "
+                "AudD sample has %d stream hole(s) (longest %d ms): no cleaner window, "
                 "sending it anyway (passage %s)",
                 holes,
                 round(longest * 1000),
