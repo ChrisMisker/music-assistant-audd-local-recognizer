@@ -1468,3 +1468,30 @@ async def test_a_title_check_keeps_its_chance_while_the_stream_has_holes(
     assert messages(caplog, "AudD names it Artist 1 - Song 1 with a plausible position")
     assert len(h.audd_calls) == calls + 2
     assert h.published[-1]["title"] == "Song 1"
+
+
+async def test_the_tail_after_a_soft_boundary_gives_the_records_length(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Magic, 2026-11-22/23): AudD's length 258 s, the record ~278 s, cut early."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 30})  # AudD's edit is 30 s; this record plays 45 s
+    for _ in range(2):
+        await h.play(1, 45)  # soft boundary at 35 s, the last 10 s an unidentified passage
+        await h.quiet(LIFT)
+    assert len(messages(caplog, "was the last 10s of track 1 after the soft boundary")) == 2
+    assert messages(caplog, "Track 1: observed length 45s adopted")
+    caplog.clear()
+    await h.play(1, 45)
+    assert messages(caplog, "Track boundary (no gap)") == []  # no early cut any more
+
+
+async def test_a_short_new_track_after_a_soft_boundary_is_not_a_tail(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 30}, audd_known={1})  # AudD can't name song 2
+    await h.play(1, 35)  # the soft boundary comes at 35 s
+    await h.play(2, 40)  # then another, longer track without a gap: unidentified
+    await h.quiet(LIFT)
+    assert messages(caplog, "after the soft boundary") == []

@@ -80,6 +80,9 @@ SONG_START_TOLERANCE_SECONDS = 2
 # a length seen twice (within the tolerance) replaces AudD's. A real silence gap also gives an
 # observed length; a digital dropout (exact zeros, -120 dBFS) does not.
 UNCERTAIN_END_GUARD_SECONDS = 20
+# An unidentified passage after a soft boundary that ends in a real gap within this many seconds
+# is taken as the rest of the previous track (see _soft_boundary_tail).
+SOFT_TAIL_MAX_SECONDS = 30
 OBSERVED_LENGTH_TOLERANCE_SECONDS = 3.0
 # A lifted needle also ends in a real gap and so gives an observed length, but it is only noted:
 # adopting needs two observations within the tolerance. A rule that ignored gaps far before the
@@ -827,6 +830,51 @@ class RecognitionEngine:
             song_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
             self._commit_pending_length()
             self.pending_length = (passage.track_id, song_end - passage.song_start_at)
+        elif (tail_of := self._soft_boundary_tail(passage, level)) is not None:
+            # the previous track went on past its expected end and stopped here
+            previous = tail_of
+            assert previous.song_start_at is not None  # checked by _soft_boundary_tail
+            tail_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
+            length = previous.closed_at + tail_end - previous.song_start_at
+            self.logger.info(
+                "Passage %s was the last %.0fs of track %d after the soft boundary: "
+                "its length on this record is about %.0fs",
+                passage.short_id,
+                tail_end,
+                previous.track_id,
+                length,
+            )
+            self.pending_length = (previous.track_id, length)
+
+    @staticmethod
+    def _soft_boundary_tail(passage: Passage, level: float) -> ClosedPlay | None:
+        """
+        Return the play this passage most likely finished, or None.
+
+        AudD's length is often another edit's: a soft boundary then cuts a track early (Magic,
+        2026-11-22/23: AudD 258 s, the record ~278 s) and its last seconds become a short passage
+        that nothing identifies, closed by the real gap at the end of the track. That gap gives
+        the track's length on this record. Not when the tail looks like another track: a
+        candidate for a different track, or longer than SOFT_TAIL_MAX_SECONDS.
+        """
+        previous = passage.follows
+        if (
+            previous is None
+            or passage.identified
+            or previous.song_start_at is None
+            or not previous.song_start_exact
+            or level <= DROPOUT_DBFS
+            or passage.seconds > SOFT_TAIL_MAX_SECONDS
+        ):
+            return None
+        other = passage.evidence.best()
+        if (
+            other is not None
+            and other.track_id != previous.track_id
+            and other.votes >= POSTPONE_MIN_VOTES
+        ):
+            return None
+        return previous
 
     @staticmethod
     def _past_track_end(passage: Passage) -> bool:
