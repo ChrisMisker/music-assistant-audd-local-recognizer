@@ -94,6 +94,10 @@ DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
 # preamp hiss sit around -55..-80 dBFS), so such a run does not count as a gap: the passage
 # continues. Only a longer run (the source stopped sending audio) becomes a gap.
 DROPOUT_MAX_SECONDS = 10.0
+# ...or this long inside an identified passage: when the source reconnects (Wi-Fi, 2026-11-20/21)
+# MA delivers 10-26 s of zeros and the same song goes on; at 10 s every reconnect split the track
+# into a new passage (Spaceman in 4 pieces). A source that really stopped closes 20 s later.
+RECONNECT_MAX_SECONDS = 30.0
 # Published instead of a track when the shown track has clearly ended: a new passage plays and its
 # first lookup did not identify it (user's wish 2026-11-19; during a gap the last track stays).
 # The provider reports the source's own placeholder metadata for it.
@@ -763,7 +767,10 @@ class RecognitionEngine:
         """Update the gap detector, treating a short run of digital zeros as a dropout."""
         if level <= DROPOUT_DBFS and not self.gap.in_gap:
             self.dropout_seconds += chunk_seconds
-            if self.dropout_seconds < DROPOUT_MAX_SECONDS:
+            identified = self.passage is not None and self.passage.identified
+            if self.dropout_seconds < (
+                RECONNECT_MAX_SECONDS if identified else DROPOUT_MAX_SECONDS
+            ):
                 return None  # keep the passage (and its clock) running through the dropout
             # the source stopped sending audio: a real gap, counted from the first zero
             event = self.gap.update(level, self.dropout_seconds)

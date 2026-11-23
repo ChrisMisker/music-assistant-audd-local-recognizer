@@ -1095,9 +1095,32 @@ async def test_a_lifted_needle_is_only_noted(
 async def test_a_long_digital_silence_is_a_gap(make_harness: Any) -> None:
     """The source stopped sending audio: after the dropout limit the passage closes."""
     h = make_harness()
+    await h.play(1, 30)  # identified at 24 s
+    await h.quiet(int(eng.RECONNECT_MAX_SECONDS) + 1, level=0)
+    assert h.engine.passage is None
+
+
+async def test_digital_silence_closes_an_unidentified_passage_sooner(make_harness: Any) -> None:
+    h = make_harness(audd_known=set())
     await h.play(1, 30)
     await h.quiet(int(eng.DROPOUT_MAX_SECONDS) + 1, level=0)
     assert h.engine.passage is None
+
+
+async def test_a_source_reconnect_does_not_split_an_identified_track(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Wi-Fi, 2026-11-21): 10-26 s of zeros per reconnect split Spaceman in 4."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 120})
+    await h.play(1, 40)
+    passage = h.engine.passage
+    await h.quiet(20, level=0)  # MA fills the reconnect with digital zeros
+    await h.play(1, 40, start=60)  # the song went on meanwhile
+    assert h.engine.passage is passage
+    assert messages(caplog, "Stream dropout: 20.0s of digital silence ignored")
+    assert messages(caplog, "Track boundary") == []
+    assert len(h.audd_calls) == 1
 
 
 async def test_a_local_hit_uses_the_stored_song_start_of_its_reference(
