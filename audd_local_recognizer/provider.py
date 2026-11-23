@@ -21,7 +21,7 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .audd_client import AudDClient, redirects_to_placeholder
-from .database import DB_FILENAME, FingerprintDatabase, open_database
+from .database import DB_FILENAME, SCHEMA_VERSION, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
@@ -117,6 +117,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 "The fingerprint database could not be used (older format or damaged); "
                 "started a new, empty one. The old file was kept as %s",
                 moved_aside,
+            )
+        elif self._db.migrated_from is not None:
+            self.logger.info(
+                "Fingerprint database upgraded from schema version %d to %d; nothing was lost",
+                self._db.migrated_from,
+                SCHEMA_VERSION,
             )
         await self._remove_expired_recordings()
         stats = await asyncio.to_thread(self._db.stats)

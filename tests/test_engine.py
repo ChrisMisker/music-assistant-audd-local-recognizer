@@ -1535,3 +1535,18 @@ async def test_a_big_cluster_needs_only_one_lookup(
     replay = make_harness(has_token=False)
     await replay.play(1, 30)  # each 12 s window shares 12 votes with the first play
     assert messages(caplog, f"Identified Artist 1 - Song 1 via local after {at}s")
+
+
+async def test_learned_windows_record_their_stream_holes(make_harness: Any, db_path: Any) -> None:
+    import sqlite3  # noqa: PLC0415
+    from contextlib import closing  # noqa: PLC0415
+
+    h = make_harness()
+    await play_with_holes(h, 1, 50, holes={40})
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT passage_offset_seconds, stream_holes FROM reference_windows ORDER BY 1"
+        ).fetchall()
+    holes = dict(rows)
+    assert holes[0.0] == 0  # an early (lookup) window, stored after the AudD hit
+    assert holes[max(holes)] == 1  # the newest learned window holds the lost second

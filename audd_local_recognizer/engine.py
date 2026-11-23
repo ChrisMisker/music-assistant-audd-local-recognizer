@@ -581,6 +581,7 @@ class Passage:
     audd_postponed: int = 0
     next_audd_at: float = float(AUDD_FIRST_ATTEMPT_SECONDS)
     early_windows: list[tuple[float, Fingerprints]] = field(default_factory=list)
+    early_holes: dict[float, int] = field(default_factory=dict)  # stream holes per window end
     evidence: TimelineEvidence = field(default_factory=TimelineEvidence)
     # passage time at which the identified song started (may be negative) and should end
     song_start_at: float | None = None
@@ -963,6 +964,7 @@ class RecognitionEngine:
                 return
             if len(passage.early_windows) < MAX_EARLY_WINDOWS:
                 passage.early_windows.append((window_end, query))
+                passage.early_holes[window_end] = self._holes(pcm)
             local = await self._run_blocking(self._db.lookup, query, passage.id)
             if not self._is_current(passage):
                 return
@@ -1050,6 +1052,7 @@ class RecognitionEngine:
         # Learn every lookup window of this passage, including the one AudD identified.
         if not passage.early_windows or passage.early_windows[-1][0] != window_end:
             passage.early_windows.append((window_end, query))
+            passage.early_holes[window_end] = self._holes(pcm)
         await self._store_early_windows(passage)
 
     async def _judge_local(self, passage: Passage, local: LocalLookup) -> bool:
@@ -1426,7 +1429,7 @@ class RecognitionEngine:
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
                 **sample_stats(pcm, self.fmt),
-                "stream_holes": stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)[0],
+                "stream_holes": self._holes(pcm),
             }
             await self._save_sample(wav, info)
         except Exception:
@@ -1705,7 +1708,7 @@ class RecognitionEngine:
     async def _learn(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         try:
             hashes = await self._fingerprint(pcm, self._divisor(window_end))
-            await self._store_reference(passage, hashes, window_end)
+            await self._store_reference(passage, hashes, window_end, self._holes(pcm))
             if passage.position_lookups_left > 0 and self._is_current(passage):
                 await self._decide_position(passage, hashes, window_end)
             if self._duration_check_due(passage, window_end):
@@ -1943,6 +1946,7 @@ class RecognitionEngine:
     async def _store_early_windows(self, passage: Passage) -> None:
         """Store the lookup windows of a just-identified passage as references."""
         windows, passage.early_windows = passage.early_windows, []
+        holes, passage.early_holes = passage.early_holes, {}
         within = [(end, hashes) for end, hashes in windows if self._within_song(passage, end)]
         if len(within) < len(windows):
             self.logger.info(
@@ -1959,6 +1963,7 @@ class RecognitionEngine:
             passage.track_id,
             passage.id,
             [(max(0.0, end - SAMPLE_SECONDS), hashes) for end, hashes in windows],
+            [holes.get(end) for end, _ in windows],
         )
         stored = [(ref, count) for ref, count in results if ref]
         if stored:
@@ -1976,8 +1981,12 @@ class RecognitionEngine:
             )
         await self._prune(passage)
 
+    def _holes(self, pcm: bytes) -> int:
+        """Return the stream holes (lost audio) in a window, as stored with its reference."""
+        return stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)[0]
+
     async def _store_reference(
-        self, passage: Passage, hashes: Fingerprints, window_end: float
+        self, passage: Passage, hashes: Fingerprints, window_end: float, holes: int | None = None
     ) -> None:
         if not self._is_current(passage) or passage.track_id is None:
             return
@@ -1989,6 +1998,7 @@ class RecognitionEngine:
             passage.id,
             max(0.0, window_end - SAMPLE_SECONDS),
             hashes,
+            holes,
         )
         if reference_id:
             self.logger.info(

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from typing import TYPE_CHECKING
+from contextlib import closing
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from audd_local_recognizer import database
 from audd_local_recognizer.database import (
     SCHEMA_VERSION,
+    DatabaseStats,
     FingerprintDatabase,
     SchemaVersionError,
     open_database,
@@ -486,3 +490,98 @@ def test_reopen_merges_an_edition_into_the_oldest_track(db_path: Path) -> None:
         reopened.upsert_track({"artist": "Barry White", "title": "You See The Trouble With Me"})
         == older
     )
+
+
+_V1_SCHEMA = """
+CREATE TABLE tracks (
+    id INTEGER PRIMARY KEY,
+    track_key TEXT NOT NULL UNIQUE,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE reference_windows (
+    id INTEGER PRIMARY KEY,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    passage_id TEXT NOT NULL,
+    passage_offset_seconds REAL NOT NULL,
+    landmark_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE landmarks (
+    reference_id INTEGER NOT NULL REFERENCES reference_windows(id) ON DELETE CASCADE,
+    fingerprint_hash TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY(reference_id, fingerprint_hash, position)
+) WITHOUT ROWID;
+CREATE INDEX idx_landmarks_hash ON landmarks(fingerprint_hash);
+CREATE INDEX idx_reference_track ON reference_windows(track_id);
+CREATE INDEX idx_reference_passage ON reference_windows(passage_id);
+PRAGMA user_version=1;
+"""
+
+
+def _v1_database(db_path: Path) -> None:
+    """Write a database as 0.9 did (schema v1) with one track and one reference."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(_V1_SCHEMA)
+        with conn:
+            conn.execute(
+                "INSERT INTO tracks(id, track_key, metadata_json) VALUES(1, ?, ?)",
+                (track_key(META), json.dumps(META)),
+            )
+            conn.execute(
+                "INSERT INTO reference_windows(id, track_id, passage_id, passage_offset_seconds,"
+                " landmark_count) VALUES(1, 1, 'old', 0.0, 20)"
+            )
+            conn.executemany(
+                "INSERT INTO landmarks VALUES(1, ?, ?)",
+                [(h, p[0]) for h, p in _landmarks(20).items()],
+            )
+
+
+def test_a_v1_database_is_upgraded_without_losing_anything(db_path: Path) -> None:
+    _v1_database(db_path)
+    db, moved = open_database(db_path)
+    assert moved is None
+    assert db.migrated_from == 1
+    assert db.stats() == DatabaseStats(tracks=1, references=1, landmarks=20)
+    assert db.find_best_match(_landmarks(20)) is not None
+    db.add_reference(1, "new", 6.0, _landmarks(20, prefix="n"), stream_holes=3)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        holes = conn.execute(
+            "SELECT passage_id, stream_holes FROM reference_windows ORDER BY id"
+        ).fetchall()
+    assert holes == [("old", None), ("new", 3)]
+    assert FingerprintDatabase(db_path).migrated_from is None  # once only
+
+
+def test_a_failed_upgrade_leaves_the_file_as_it_was(db_path: Path, monkeypatch: Any) -> None:
+    _v1_database(db_path)
+
+    def broken(conn: sqlite3.Connection) -> None:
+        conn.execute("ALTER TABLE reference_windows ADD COLUMN stream_holes INTEGER")
+        conn.execute("SELECT no_such_column FROM tracks")
+
+    monkeypatch.setitem(database.MIGRATIONS, 1, broken)
+    with pytest.raises(SchemaVersionError, match="upgrading schema version 1 failed"):
+        FingerprintDatabase(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(reference_windows)")]
+    assert "stream_holes" not in columns
+
+
+def test_a_database_from_a_newer_version_is_kept_aside(db_path: Path) -> None:
+    FingerprintDatabase(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    db, moved = open_database(db_path)
+    assert moved is not None
+    assert moved.exists()
+    assert db.stats().tracks == 0
+
+
+def test_every_version_below_the_current_one_has_a_migration() -> None:
+    assert sorted(database.MIGRATIONS) == list(range(1, SCHEMA_VERSION))

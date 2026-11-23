@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "fingerprints.sqlite3"
 _QUERY_BATCH = 500
 
@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS reference_windows (
     passage_id TEXT NOT NULL,
     passage_offset_seconds REAL NOT NULL,
     landmark_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    stream_holes INTEGER  -- runs of digital zeros in the window (lost audio); NULL = not measured
 );
 CREATE TABLE IF NOT EXISTS landmarks (
     reference_id INTEGER NOT NULL REFERENCES reference_windows(id) ON DELETE CASCADE,
@@ -76,8 +77,25 @@ class LocalLookup:
     rows: list[MatchRow]
 
 
+def _statements(script: str) -> list[str]:
+    """Split a schema script into statements (executescript would commit the transaction)."""
+    lines = [line.split("--", 1)[0] for line in script.splitlines()]
+    return [part.strip() for part in "\n".join(lines).split(";") if part.strip()]
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by an incompatible schema version."""
+
+
+def _v1_to_v2(db: sqlite3.Connection) -> None:
+    """v2 (0.10): how many stream holes each learned window had; older windows: unknown."""
+    db.execute("ALTER TABLE reference_windows ADD COLUMN stream_holes INTEGER")
+
+
+# Each entry upgrades a database from that version to the next one. All steps a database needs
+# run in one transaction when it is opened: a step that fails leaves the file as it was. Never
+# change a released step; add a new one (and raise SCHEMA_VERSION) instead.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1_to_v2}
 
 
 @dataclass(frozen=True)
@@ -236,21 +254,40 @@ class FingerprintDatabase:
                 yield db
 
     def _init_schema(self) -> None:
-        with closing(sqlite3.connect(self.path, timeout=30)) as db:
+        self.migrated_from: int | None = None
+        with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             version = int(db.execute("PRAGMA user_version").fetchone()[0])
             has_tables = db.execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
             ).fetchone()[0]
-            if version not in (0, SCHEMA_VERSION) or (version == 0 and has_tables):
+            if (version == 0 and has_tables) or version > SCHEMA_VERSION or version < 0:
                 msg = (
                     f"{self.path} has schema version {version}, expected {SCHEMA_VERSION}; "
                     "reset the fingerprint database"
                 )
                 raise SchemaVersionError(msg)
             db.execute("PRAGMA journal_mode=WAL")
-            with db:
-                db.executescript(_SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if version == 0:
+                    for statement in _statements(_SCHEMA):
+                        db.execute(statement)
+                else:
+                    for step in range(version, SCHEMA_VERSION):
+                        MIGRATIONS[step](db)
                 db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            except sqlite3.DatabaseError as err:
+                db.execute("ROLLBACK")
+                if "locked" in str(err) or "busy" in str(err):
+                    raise  # transient: try again next time, never move the file aside
+                msg = f"{self.path}: upgrading schema version {version} failed: {err}"
+                raise SchemaVersionError(msg) from err
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+            if 0 < version < SCHEMA_VERSION:
+                self.migrated_from = version
         self._rekey_tracks()
 
     def _rekey_tracks(self) -> None:
@@ -387,37 +424,44 @@ class FingerprintDatabase:
         passage_id: str,
         passage_offset_seconds: float,
         hashes: Fingerprints,
+        stream_holes: int | None = None,
     ) -> tuple[int, int]:
         """
         Persist one reference window; return (reference_id, landmark_count).
 
         Returns (0, 0) and stores nothing when the window has no landmarks.
         """
-        return self.add_references(track_id, passage_id, [(passage_offset_seconds, hashes)])[0]
+        return self.add_references(
+            track_id, passage_id, [(passage_offset_seconds, hashes)], [stream_holes]
+        )[0]
 
     def add_references(
         self,
         track_id: int,
         passage_id: str,
         windows: list[tuple[float, Fingerprints]],
+        stream_holes: list[int | None] | None = None,
     ) -> list[tuple[int, int]]:
         """
         Persist several reference windows in one transaction.
 
         Returns (reference_id, landmark_count) per window, (0, 0) for empty windows.
+        stream_holes gives the holes per window (None = not measured).
         """
+        holes = stream_holes or [None] * len(windows)
         results: list[tuple[int, int]] = []
         with self._transaction() as db:
-            for passage_offset_seconds, hashes in windows:
+            for (passage_offset_seconds, hashes), window_holes in zip(windows, holes, strict=True):
                 rows = {(h, int(p)) for h, positions in hashes.items() for p in positions}
                 if not rows:
                     results.append((0, 0))
                     continue
                 cur = db.execute(
                     """INSERT INTO reference_windows
-                       (track_id, passage_id, passage_offset_seconds, landmark_count)
-                       VALUES(?, ?, ?, ?)""",
-                    (track_id, passage_id, passage_offset_seconds, len(rows)),
+                       (track_id, passage_id, passage_offset_seconds, landmark_count,
+                        stream_holes)
+                       VALUES(?, ?, ?, ?, ?)""",
+                    (track_id, passage_id, passage_offset_seconds, len(rows), window_holes),
                 )
                 reference_id = int(cur.lastrowid or 0)
                 db.executemany(
