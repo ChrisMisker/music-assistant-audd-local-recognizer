@@ -94,7 +94,9 @@ fetch_verified() {
   local dest="$1" expected="$2" try
   shift 2
   for ((try = 1; try <= ATTEMPTS; try++)); do
-    if "$@" >"$dest" && [[ "$(local_sha "$dest")" == "$expected" ]]; then
+    # </dev/null: ssh would otherwise read the caller's stdin, e.g. the rest of the file list
+    # in the copy loop below, which then ended after the first file (2026-11-23)
+    if "$@" >"$dest" </dev/null && [[ "$(local_sha "$dest")" == "$expected" ]]; then
       return 0
     fi
     warn "$(basename "$dest"): copy $try/$ATTEMPTS incomplete or different, retrying"
@@ -116,7 +118,11 @@ snap_sha="$(container_py <<PY
 import hashlib, sqlite3
 src = sqlite3.connect("file:$DB?mode=ro", uri=True)
 dst = sqlite3.connect("$SNAP"); src.backup(dst); dst.close(); src.close()
-print(hashlib.sha256(open("$SNAP", "rb").read()).hexdigest())
+h = hashlib.sha256()
+with open("$SNAP", "rb") as f:  # in blocks: the HA host has little free memory
+    for block in iter(lambda: f.read(1 << 20), b""):
+        h.update(block)
+print(h.hexdigest())
 PY
 )"
 fetch_verified "$DEST/fingerprints.sqlite3" "$snap_sha" \
