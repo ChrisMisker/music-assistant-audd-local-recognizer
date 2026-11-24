@@ -1437,7 +1437,8 @@ class RecognitionEngine:
             speed,
             passage.short_id,
         )
-        wav = pcm_to_wav(pcm, self.fmt, speed)
+        # off the event loop: resampling 12 s for the speed correction is real CPU work
+        wav = await self._run_blocking(pcm_to_wav, pcm, self.fmt, speed)
         try:
             result = await self._audd(wav)
         except asyncio.CancelledError:

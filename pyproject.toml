@@ -6,7 +6,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 # Runtime requirements are declared in audd_local_recognizer/manifest.json (MA installs them).
-dependencies = ["audalign==1.3.2"]
+dependencies = ["audalign==1.3.2", "soxr==1.1.0"]
 
 [dependency-groups]
 # Local development: unit tests, lint, types. Music Assistant itself is deliberately NOT part of
@@ -14,6 +14,7 @@ dependencies = ["audalign==1.3.2"]
 # modules are tested here; the tests that need a real server skip when it is absent.
 dev = [
   "audalign==1.3.2",
+  "soxr==1.1.0",
   "aiohttp>=3.10",
   "numpy",
   "codespell==2.4.3",

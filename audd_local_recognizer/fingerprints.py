@@ -13,7 +13,6 @@ import warnings
 import wave
 from collections import Counter
 from dataclasses import dataclass, replace
-from fractions import Fraction
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -179,12 +178,8 @@ def change_speed(samples: np.ndarray, percent: float) -> np.ndarray:
     """
     if not percent or not samples.size:
         return samples
-    from scipy.signal import resample_poly  # noqa: PLC0415 - audalign dependency, heavy
-
-    ratio = Fraction(1 / (1 + percent / 100)).limit_denominator(1000)  # samples out / in
-    resampled = resample_poly(samples.astype(np.float32), ratio.numerator, ratio.denominator)
-    result: np.ndarray = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
-    return result
+    # fewer samples out (faster) or more (slower), played back at the same rate
+    return _soxr_s16(samples, 1.0 + percent / 100, 1.0)
 
 
 def pcm_to_wav(pcm: bytes, fmt: PcmFormat, speed_percent: float = 0.0) -> bytes:
@@ -205,15 +200,24 @@ def pcm_to_wav(pcm: bytes, fmt: PcmFormat, speed_percent: float = 0.0) -> bytes:
 
 
 def resample_s16(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
-    """Resample mono int16 audio with a polyphase filter (no-op when rates match)."""
+    """Resample mono int16 audio (no-op when rates match)."""
     if source_rate == target_rate or not samples.size:
         return samples
-    from scipy.signal import resample_poly  # noqa: PLC0415 - audalign dependency, heavy
+    return _soxr_s16(samples, float(source_rate), float(target_rate))
 
-    divisor = math.gcd(source_rate, target_rate)
-    resampled = resample_poly(
-        samples.astype(np.float32), target_rate // divisor, source_rate // divisor
-    )
+
+def _soxr_s16(samples: np.ndarray, in_rate: float, out_rate: float) -> np.ndarray:
+    """
+    Resample mono int16 audio with libsoxr (HQ).
+
+    Not scipy's resample_poly: on the HA Blue that took 2.4 s per 12 s window and held the GIL in
+    long stretches, which stalled MA's event loop and put 100 ms holes of silence into the live
+    source (2026-11-24). soxr takes ~50 ms there and gives the same Panako hashes (100 % of
+    1703 on real windows). It ships with MA (Sendspin's requirement).
+    """
+    import soxr  # noqa: PLC0415 - imported where used, like the other audio libraries
+
+    resampled = soxr.resample(samples.astype(np.float32), in_rate, out_rate, quality="HQ")
     result: np.ndarray = np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
     return result
 
