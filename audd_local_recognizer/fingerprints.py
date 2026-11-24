@@ -290,6 +290,21 @@ def _speed_up_peak_search(fingerprinter: Any) -> None:
     fingerprinter._audd_local_fast_peaks = True  # noqa: SLF001 - our own marker
 
 
+def warm_up() -> None:
+    """
+    Import audalign and scipy and fingerprint one second of noise (call in a worker thread).
+
+    The first fingerprint of a session took 6.8 s on the HA Blue, mostly imports, which hold the
+    GIL: MA's event loop stalled 557 ms and Sendspin put 100 ms of silence into the source
+    (2026-11-24). Done once when the provider loads, nothing is playing yet.
+    """
+    rate = FINGERPRINT_SAMPLE_RATE
+    noise = np.random.default_rng(0).normal(0, 3000, rate).astype("<i2").tobytes()
+    fmt = PcmFormat(sample_rate=48000, channels=1, sample_width=2, content_type="s16le")
+    fingerprint_window(noise, fmt)
+    change_speed(np.frombuffer(noise, dtype="<i2"), -1.0)
+
+
 def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
     """Return the full Audalign Panako hashes for one PCM window (CPU heavy: offload it)."""
     FingerprintConfig, fingerprinter = _audalign()  # noqa: N806 - a class

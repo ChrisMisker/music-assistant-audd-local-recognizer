@@ -25,7 +25,7 @@ from .audd_client import AudDClient, redirects_to_placeholder
 from .database import DB_FILENAME, SCHEMA_VERSION, FingerprintDatabase, open_database
 from .debug_samples import write_debug_sample
 from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
-from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
+from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window, warm_up
 from .loopwatch import LoopWatch
 from .recording import (
     FLUSH_SECONDS,
@@ -149,6 +149,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 "'Audio sources to recognize', or turn on 'Recognize all live audio sources'."
             )
         self.mass.create_task(self._clean_stored_artwork(), task_name=f"{self.domain}_artwork")
+        # imports and first-call costs now, not during the first track (they stall MA's loop)
+        self.mass.create_task(self._warm_up(), task_name=f"{self.domain}_warm_up")
 
     async def _clean_stored_artwork(self) -> None:
         """Drop stored Deezer covers that turn out to be Deezer's empty "no cover" image."""
@@ -470,6 +472,15 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if self.config.get_value(CONF_RECORD_INPUT):
             await self._start_recording(session_id, fmt)
         return True
+
+    async def _warm_up(self) -> None:
+        started = time.monotonic()
+        try:
+            await asyncio.to_thread(warm_up)
+        except Exception:
+            self.logger.debug("Fingerprint warm-up failed", exc_info=True)
+            return
+        self.logger.debug("Fingerprinting warmed up in %.1fs", time.monotonic() - started)
 
     async def _remove_expired_recordings(self) -> None:
         """Delete recordings older than RECORDING_KEEP_DAYS: they are temporary."""

@@ -75,3 +75,23 @@ async def test_timings_are_summarized_per_kind_of_work(
     assert len(timings) == 1
     assert "lookup 2x median" in timings[0]
     assert "evidence best 1x" in timings[0]
+
+
+async def test_garbage_collections_are_timed_and_named(caplog: pytest.LogCaptureFixture) -> None:
+    import gc  # noqa: PLC0415
+
+    caplog.set_level(logging.INFO)
+    watch = LoopWatch(logging.getLogger("test.loopwatch"))
+    watch.start()
+    gc.collect()
+    assert watch._describe(time.monotonic(), 0.1).startswith("gc gen2")
+    watch.stop()
+    assert watch._on_gc not in gc.callbacks
+    timings = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Timings:")]
+    assert "gc gen2 1x" in timings[0]
+
+
+def test_warm_up_runs() -> None:
+    from audd_local_recognizer.fingerprints import warm_up  # noqa: PLC0415
+
+    warm_up()

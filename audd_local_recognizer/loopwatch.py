@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import logging
 import time
 from collections import Counter
@@ -40,6 +41,7 @@ class LoopWatch:
         self._worst = 0.0
         self._since = time.monotonic()
         self._durations: dict[str, list[float]] = {}  # label -> seconds, since the last summary
+        self._gc_started = 0.0
 
     @property
     def running(self) -> bool:
@@ -51,9 +53,13 @@ class LoopWatch:
         if not self.running:
             self._stalls, self._worst, self._since = 0, 0.0, time.monotonic()
             self._task = asyncio.get_running_loop().create_task(self._run())
+            if self._on_gc not in gc.callbacks:
+                gc.callbacks.append(self._on_gc)
 
     def stop(self) -> None:
         """Stop measuring and log the totals."""
+        if self._on_gc in gc.callbacks:
+            gc.callbacks.remove(self._on_gc)
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -82,6 +88,15 @@ class LoopWatch:
             yield
         finally:
             self._record(label, time.monotonic() - started)
+
+    def _on_gc(self, phase: str, info: dict[str, int]) -> None:
+        """Time Python's garbage collections: a full one pauses every thread, the loop too."""
+        if phase == "start":
+            self._gc_started = time.monotonic()
+        elif phase == "stop" and self._gc_started:
+            label = f"gc gen{info.get('generation', '?')}"
+            self._recent[label] = time.monotonic()
+            self._record(label, self._recent[label] - self._gc_started)
 
     def _record(self, label: str, seconds: float) -> None:
         if self.running:
@@ -112,7 +127,8 @@ class LoopWatch:
         """Name what ran during the stall: in flight now, or ended within it."""
         window = lag + INTERVAL_SECONDS
         labels = dict(self._busy)
-        for label, ended in self._recent.items():
+        # a copy: garbage-collection callbacks may add to it from another thread
+        for label, ended in list(self._recent.items()):
             if now - ended <= window and label not in labels:
                 labels[label] = 0
         if not labels:
@@ -155,14 +171,14 @@ class LoopWatch:
 
     def _log_timings(self) -> None:
         """Log count, median and worst time per kind of work since the last summary."""
-        if not self._durations:
+        durations, self._durations = self._durations, {}  # swapped: other threads may record
+        if not durations:
             return
         parts = []
-        for label, seconds in sorted(self._durations.items(), key=lambda item: -sum(item[1])):
+        for label, seconds in sorted(durations.items(), key=lambda item: -sum(item[1])):
             ordered = sorted(seconds)
             parts.append(
                 f"{label} {len(ordered)}x median {round(ordered[len(ordered) // 2] * 1000)} "
                 f"max {round(ordered[-1] * 1000)} ms"
             )
-        self._durations.clear()
         self._logger.info("Timings: %s", "; ".join(parts))
