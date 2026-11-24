@@ -89,6 +89,19 @@ echo "== Open community catalog pull requests"
 gh pr list -R "$CATALOG" --state open --limit 30 --json number,title,updatedAt \
   -q '.[] | "  #\(.number)  \(.updatedAt[0:10])  \(.title)"' | grep . || echo "  (none)"
 
+echo
+echo "== Watched discussions (comments, upvotes, last activity)"
+# owner/repo#number of discussions we opened or follow
+WATCHED_DISCUSSIONS=(
+  "esphome/feature-requests#3973"  # usb_audio microphone input gain (Lenco +10 dB clipping)
+)
+for item in "${WATCHED_DISCUSSIONS[@]}"; do
+  repo="${item%#*}" number="${item##*#}"
+  gh api graphql -f query="query{repository(owner:\"${repo%/*}\",name:\"${repo#*/}\"){discussion(number:$number){title updatedAt upvoteCount comments{totalCount}}}}" \
+    -q ".data.repository.discussion | \"  $item  \(.updatedAt[0:10])  \(.comments.totalCount) comments, \(.upvoteCount) upvotes  \(.title)\"" \
+    || echo "  $item  (could not read)"
+done
+
 if [[ " $* " == *" --mark "* ]]; then
   printf 'server=%s\ncatalog=%s\nchecked=%s\n' "$head_server" "$head_catalog" "$(date +%Y-%m-%d)" > "$STATE"
   echo
