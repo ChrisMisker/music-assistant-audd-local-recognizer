@@ -1,11 +1,13 @@
 """
-Measure stalls of Music Assistant's event loop while live sessions run (diagnostics).
+Measure stalls of Music Assistant's event loop and the time our work takes (diagnostics).
 
 Sendspin pads the live source with silence when the event loop falls behind (MA's own note:
 the GIL serializes Python, so CPU work in a worker thread can starve the playback loop), which
 shows up as 100 ms holes of exact zeros in every source at once (2026-11-24). This logs each
 stall with what the provider was doing at that moment, so a stall can be tied to our own work
-(fingerprinting, database, AudD) or ruled out. MA-independent: needs only asyncio and a logger.
+(fingerprinting, database, AudD) or ruled out. It also times every piece of work it is told about
+and logs a summary (count, median, worst) every SUMMARY_SECONDS, so a version that makes something
+heavier shows up at once. MA-independent: needs only asyncio and a logger.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import contextlib
 import logging
 import time
 from collections import Counter
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 
 # The loop is asked to wake up this often; a wake-up this much later counts as a stall.
@@ -37,6 +39,7 @@ class LoopWatch:
         self._stalls = 0
         self._worst = 0.0
         self._since = time.monotonic()
+        self._durations: dict[str, list[float]] = {}  # label -> seconds, since the last summary
 
     @property
     def running(self) -> bool:
@@ -55,11 +58,13 @@ class LoopWatch:
             self._task.cancel()
             self._task = None
             self._summary("stopped")
+            self._log_timings()
 
     @contextlib.asynccontextmanager
     async def busy(self, label: str) -> AsyncIterator[None]:
         """Mark provider work as in flight for the duration of the block."""
         self._busy[label] += 1
+        started = time.monotonic()
         try:
             yield
         finally:
@@ -67,6 +72,30 @@ class LoopWatch:
             if self._busy[label] <= 0:
                 del self._busy[label]
             self._recent[label] = time.monotonic()
+            self._record(label, self._recent[label] - started)
+
+    @contextlib.contextmanager
+    def timed(self, label: str) -> Iterator[None]:
+        """Time synchronous work on the event loop itself (it cannot overlap a stall check)."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self._record(label, time.monotonic() - started)
+
+    def _record(self, label: str, seconds: float) -> None:
+        if self.running:
+            self._durations.setdefault(label, []).append(seconds)
+
+    def run_blocking(self, func: Callable[..., Any], *args: Any) -> Awaitable[Any]:
+        """Run func in a worker thread, timed under its own name."""
+        label = getattr(func, "__name__", "work")
+
+        async def run() -> Any:
+            async with self.busy(label):
+                return await asyncio.to_thread(func, *args)
+
+        return run()
 
     def wrap(
         self, label: str, func: Callable[..., Awaitable[Any]]
@@ -111,6 +140,7 @@ class LoopWatch:
             if now - last_summary >= SUMMARY_SECONDS:
                 last_summary = now
                 self._summary("so far")
+                self._log_timings()
 
     def _summary(self, when: str) -> None:
         minutes = (time.monotonic() - self._since) / 60
@@ -122,3 +152,17 @@ class LoopWatch:
             minutes,
             round(self._worst * 1000),
         )
+
+    def _log_timings(self) -> None:
+        """Log count, median and worst time per kind of work since the last summary."""
+        if not self._durations:
+            return
+        parts = []
+        for label, seconds in sorted(self._durations.items(), key=lambda item: -sum(item[1])):
+            ordered = sorted(seconds)
+            parts.append(
+                f"{label} {len(ordered)}x median {round(ordered[len(ordered) // 2] * 1000)} "
+                f"max {round(ordered[-1] * 1000)} ms"
+            )
+        self._durations.clear()
+        self._logger.info("Timings: %s", "; ".join(parts))

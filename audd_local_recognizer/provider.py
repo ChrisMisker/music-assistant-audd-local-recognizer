@@ -9,6 +9,7 @@ uses public MA APIs: MediaType.AUDIO_SOURCE, _run_offloaded and report_stream_me
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -105,7 +106,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         # sessions whose recording was split at a long silence, and their PCM format
         self._split_waiting: set[str] = set()
         self._formats: dict[str, PcmFormat] = {}
-        # with input recording on (a debug aid), stalls of MA's event loop are logged too
+        # with input recording on or debug logging (debug aids), stalls of MA's event loop and
+        # the time our work takes are logged too
         self._loopwatch = LoopWatch(self.logger)
 
     async def handle_async_init(self) -> None:
@@ -453,7 +455,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             fingerprint=lambda pcm, divisor: self._fingerprint(pcm, fmt, divisor),
             db=self._db,
             audd=self._loopwatch.wrap("audd", audd) if audd else None,
-            run_blocking=self._loopwatch.wrap("database", asyncio.to_thread),
+            run_blocking=self._loopwatch.run_blocking,
+            timed=self._loopwatch.timed,
             publish=lambda metadata: self._publish(session_id, metadata),
             spawn=lambda coro: self.mass.create_task(coro, task_name=f"{self.domain}_recognition"),
             logger=self.logger,
@@ -462,8 +465,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             fast_start_seconds=FAST_START_SECONDS if self._fast_start() else 0.0,
             audd_thorough=bool(self.config.get_value(CONF_AUDD_THOROUGH)),
         )
+        if self.config.get_value(CONF_RECORD_INPUT) or self.logger.isEnabledFor(logging.DEBUG):
+            self._loopwatch.start()  # a debug aid: stalls and timings in the log
         if self.config.get_value(CONF_RECORD_INPUT):
-            self._loopwatch.start()
             await self._start_recording(session_id, fmt)
         return True
 

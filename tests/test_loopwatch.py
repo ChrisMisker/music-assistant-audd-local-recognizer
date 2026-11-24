@@ -53,3 +53,25 @@ async def test_wrap_marks_calls_and_recent_work_is_named(
     assert watch._describe(time.monotonic(), 0.1) == "database"  # ended just now
     monkeypatch.setattr(loopwatch, "INTERVAL_SECONDS", 0.0)
     assert watch._describe(time.monotonic() + 1, 0.1) == "nothing of ours"
+
+
+async def test_timings_are_summarized_per_kind_of_work(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    watch = LoopWatch(logging.getLogger("test.loopwatch"))
+    watch.start()
+
+    def lookup(value: int) -> int:
+        time.sleep(0.01)
+        return value
+
+    assert await watch.run_blocking(lookup, 3) == 3
+    assert await watch.run_blocking(lookup, 4) == 4
+    with watch.timed("evidence best"):
+        pass
+    watch.stop()
+    timings = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Timings:")]
+    assert len(timings) == 1
+    assert "lookup 2x median" in timings[0]
+    assert "evidence best 1x" in timings[0]

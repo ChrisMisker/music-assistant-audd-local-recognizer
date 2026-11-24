@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
@@ -50,6 +51,7 @@ from .fingerprints import (
 if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable, Coroutine
+    from contextlib import AbstractContextManager
 
     from .database import FingerprintDatabase, LocalLookup, MatchRow
 
@@ -425,9 +427,15 @@ class TimelineEvidence:
     the same audio keeps one shift; accidental collisions scatter.
     """
 
-    def __init__(self, frame_seconds: float = PANAKO_FRAME_SECONDS) -> None:
+    def __init__(
+        self,
+        frame_seconds: float = PANAKO_FRAME_SECONDS,
+        timed: Callable[[str], AbstractContextManager[None]] | None = None,
+    ) -> None:
         """Start empty; frame_seconds is the duration of one fingerprint position step."""
         self.frame_seconds = frame_seconds
+        # optional timing of this pure-Python work, which runs on the event loop
+        self._timed = timed or (lambda _label: nullcontext())
         self.lookups = 0
         # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there
         self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
@@ -441,6 +449,19 @@ class TimelineEvidence:
         self._changed: dict[tuple[int, str], set[int]] = {}
 
     def add(
+        self,
+        query: Fingerprints,
+        rows: list[MatchRow],
+        query_start_seconds: float,
+        *,
+        new_lookup: bool = True,
+        dense: bool = False,
+    ) -> None:
+        """Add one lookup (or, with new_lookup=False, another phase of the same lookup)."""
+        with self._timed("evidence add"):
+            self._add(query, rows, query_start_seconds, new_lookup=new_lookup, dense=dense)
+
+    def _add(
         self,
         query: Fingerprints,
         rows: list[MatchRow],
@@ -475,6 +496,13 @@ class TimelineEvidence:
                 seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
 
     def best(
+        self, track_id: int | None = None, min_ordinary: int = 0, large: int | None = None
+    ) -> Coherence | None:
+        """Return the strongest cluster (of one track if given), or None (see _best)."""
+        with self._timed("evidence best"):
+            return self._best(track_id, min_ordinary, large)
+
+    def _best(
         self, track_id: int | None = None, min_ordinary: int = 0, large: int | None = None
     ) -> Coherence | None:
         """
@@ -750,6 +778,7 @@ class RecognitionEngine:
         frame_seconds: float = PANAKO_FRAME_SECONDS,
         lookup_phases: int = 1,
         audd_thorough: bool = False,
+        timed: Callable[[str], AbstractContextManager[None]] | None = None,
     ) -> None:
         """Create the engine; the stream starts inside a passage."""
         self.fmt = fmt
@@ -774,6 +803,7 @@ class RecognitionEngine:
         self.shown_passage_id: str | None = None  # passage whose track MA shows
         self.background: set[asyncio.Task[None]] = set()
         self.frame_seconds = frame_seconds
+        self._timed = timed
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
@@ -860,7 +890,7 @@ class RecognitionEngine:
     def _open_passage(self, reason: str) -> Passage:
         passage = Passage(
             window_bytes=self.window_bytes,
-            evidence=TimelineEvidence(self.frame_seconds),
+            evidence=TimelineEvidence(self.frame_seconds, self._timed),
             opened_at=self.stream_seconds,
         )
         self.passage = passage
