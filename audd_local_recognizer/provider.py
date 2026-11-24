@@ -25,6 +25,7 @@ from .database import DB_FILENAME, SCHEMA_VERSION, FingerprintDatabase, open_dat
 from .debug_samples import write_debug_sample
 from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window
+from .loopwatch import LoopWatch
 from .recording import (
     FLUSH_SECONDS,
     MAX_RECORDING_SECONDS,
@@ -104,6 +105,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         # sessions whose recording was split at a long silence, and their PCM format
         self._split_waiting: set[str] = set()
         self._formats: dict[str, PcmFormat] = {}
+        # with input recording on (a debug aid), stalls of MA's event loop are logged too
+        self._loopwatch = LoopWatch(self.logger)
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -449,7 +452,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             gap_settings=GapSettings(float(silence), float(resume), float(min_gap)),
             fingerprint=lambda pcm, divisor: self._fingerprint(pcm, fmt, divisor),
             db=self._db,
-            audd=audd,
+            audd=self._loopwatch.wrap("audd", audd) if audd else None,
+            run_blocking=self._loopwatch.wrap("database", asyncio.to_thread),
             publish=lambda metadata: self._publish(session_id, metadata),
             spawn=lambda coro: self.mass.create_task(coro, task_name=f"{self.domain}_recognition"),
             logger=self.logger,
@@ -459,6 +463,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             audd_thorough=bool(self.config.get_value(CONF_AUDD_THOROUGH)),
         )
         if self.config.get_value(CONF_RECORD_INPUT):
+            self._loopwatch.start()
             await self._start_recording(session_id, fmt)
         return True
 
@@ -490,7 +495,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             return
         # the database as it is when the recording starts: replaying against a later copy would
         # include what was learned (and pruned) during this very recording
-        await asyncio.to_thread(self._db.backup_to, folder / f"{recorder.started}_db.sqlite3")
+        async with self._loopwatch.busy("database copy"):
+            await asyncio.to_thread(self._db.backup_to, folder / f"{recorder.started}_db.sqlite3")
         self._recorders[session_id] = (recorder, asyncio.Lock())
         log_path = folder / f"{recorder.started}.log"
         self._session_logs[session_id] = await asyncio.to_thread(SessionLog, self.logger, log_path)
@@ -535,7 +541,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         recorder.add(pcm_chunk)
         if recorder.buffered_seconds < FLUSH_SECONDS:
             return
-        async with lock:
+        async with lock, self._loopwatch.busy("recording"):
             await asyncio.to_thread(recorder.flush)
         if recorder.full:
             self._recorders.pop(session_id, None)
@@ -554,11 +560,15 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             await asyncio.to_thread(session_log.close)
 
     async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
-        await asyncio.to_thread(write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info)
+        async with self._loopwatch.busy("debug sample"):
+            await asyncio.to_thread(
+                write_debug_sample, self._storage_dir() / DEBUG_SUBDIR, wav, info
+            )
 
     async def _fingerprint(self, pcm: bytes, fmt: PcmFormat, divisor: int) -> Fingerprints:
         # _run_offloaded keeps CPU work below playback (MA's analysis pool + solo lock).
-        hashes: Fingerprints = await self._run_offloaded(fingerprint_window, pcm, fmt, divisor)
+        async with self._loopwatch.busy(f"fingerprint 1/{divisor}"):
+            hashes: Fingerprints = await self._run_offloaded(fingerprint_window, pcm, fmt, divisor)
         return hashes
 
     def _publish(self, session_id: str, metadata: dict[str, Any]) -> bool:
@@ -621,6 +631,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
             self.logger.info("Analysis ended: session=%s", session_id)
+        if not self._engines:
+            self._loopwatch.stop()
         await self._stop_recording(session_id)
         self._split_waiting.discard(session_id)
         self._formats.pop(session_id, None)
@@ -631,6 +643,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         self._placeholders.pop(session_id, None)
         if (engine := self._engines.pop(session_id, None)) is not None:
             engine.close()
+        if not self._engines:
+            self._loopwatch.stop()
         await self._stop_recording(session_id)
         self._split_waiting.discard(session_id)
         self._formats.pop(session_id, None)
