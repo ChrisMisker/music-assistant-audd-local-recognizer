@@ -52,6 +52,10 @@ VERSION = "0.9.0"
 STORAGE_SUBDIR = "audd_local_recognizer"
 DEBUG_SUBDIR = "debug"
 RECORDINGS_SUBDIR = "recordings"
+# Experiment switch, no setting on purpose: with this file in the provider's data folder, new
+# sessions are only recorded and timed, never recognized. It shows whether event-loop stalls (and
+# Sendspin's 100 ms silences) happen without our work at all (2026-11-24).
+RECORD_ONLY_FLAG = "record_only"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
@@ -105,6 +109,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         self._session_logs: dict[str, SessionLog] = {}
         # sessions whose recording was split at a long silence, and their PCM format
         self._split_waiting: set[str] = set()
+        # sessions in record-only mode (an experiment: no recognition at all, see RECORD_ONLY_FLAG)
+        self._record_only: set[str] = set()
         self._formats: dict[str, PcmFormat] = {}
         # with input recording on or debug logging (debug aids), stalls of MA's event loop and
         # the time our work takes are logged too
@@ -467,6 +473,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             fast_start_seconds=FAST_START_SECONDS if self._fast_start() else 0.0,
             audd_thorough=bool(self.config.get_value(CONF_AUDD_THOROUGH)),
         )
+        if await asyncio.to_thread((self._storage_dir() / RECORD_ONLY_FLAG).exists):
+            self._record_only.add(session_id)
+            self.logger.warning(
+                "Record-only mode (%s exists): this session is recorded and timed, but not "
+                "recognized (no fingerprints, no database, no AudD)",
+                RECORD_ONLY_FLAG,
+            )
         if self.config.get_value(CONF_RECORD_INPUT) or self.logger.isEnabledFor(logging.DEBUG):
             self._loopwatch.start()  # a debug aid: stalls and timings in the log
         if self.config.get_value(CONF_RECORD_INPUT):
@@ -630,8 +643,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
         if (engine := self._engines.get(session_id)) is not None:
-            with self._loopwatch.timed("chunk"):  # level, gap detection, buffering
-                engine.feed(pcm_chunk)
+            if session_id not in self._record_only:
+                with self._loopwatch.timed("chunk"):  # level, gap detection, buffering
+                    engine.feed(pcm_chunk)
             if self._recorders or self._split_waiting:
                 await self._maybe_split_recording(session_id, engine)
         if self._recorders:
@@ -652,6 +666,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self._loopwatch.stop()
         await self._stop_recording(session_id)
         self._split_waiting.discard(session_id)
+        self._record_only.discard(session_id)
         self._formats.pop(session_id, None)
         await super().cancel(session_id)
 
@@ -664,5 +679,6 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self._loopwatch.stop()
         await self._stop_recording(session_id)
         self._split_waiting.discard(session_id)
+        self._record_only.discard(session_id)
         self._formats.pop(session_id, None)
         return None
