@@ -36,6 +36,7 @@ if importlib.util.find_spec("music_assistant") is not None:
 
 RATE = 100
 FMT = PcmFormat(sample_rate=RATE, channels=1, sample_width=2, content_type="s16le")
+PLAYING = "playing"  # an audd_script entry: answer that call with what is playing
 
 
 def music(song: int, second: int) -> bytes:
@@ -74,7 +75,8 @@ class Harness:
     audd_calls: list[list[int]] = field(default_factory=list)
     published: list[dict[str, Any]] = field(default_factory=list)
     cleared: int = 0  # placeholder reports (the shown track was withdrawn)
-    # songs AudD knows; None entries in audd_script force a no-match for that call
+    # songs AudD knows; None entries in audd_script force a no-match for that call, PLAYING
+    # answers that call normally
     audd_known: set[int] = field(default_factory=lambda: {1, 2, 3, 4})
     # track durations (seconds) AudD reports; a song listed here also gets a timecode: the song
     # second at the end of the sample, as real AudD answers
@@ -147,6 +149,8 @@ class Harness:
             await self.audd_gate.wait()
         if self.audd_script:
             scripted = self.audd_script.pop(0)
+            if scripted == PLAYING:
+                return self._answer(codes)
             if isinstance(scripted, Exception):
                 raise scripted
             if scripted is None:
@@ -154,6 +158,10 @@ class Harness:
             if isinstance(scripted, dict):
                 return dict(scripted)  # a scripted hit, e.g. another track than played
             return scripted  # e.g. an AudDNoMatch with a reason
+        return self._answer(codes)
+
+    def _answer(self, codes: list[int]) -> Any:
+        """Answer like AudD: the song that fills most of the sample, if AudD knows it."""
         songs = {c // 1000 for c in codes if c}
         song = max(songs, key=lambda s: sum(1 for c in codes if c // 1000 == s), default=0)
         if song not in self.audd_known:

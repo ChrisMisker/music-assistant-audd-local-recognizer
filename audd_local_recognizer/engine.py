@@ -122,6 +122,9 @@ MAX_TITLE_CHECKS_PER_PASSAGE = 1
 # seconds after that moment (a full window past it). Another title there is a soft boundary at
 # the new song's start; the same title means the timecode was another edit's. One request.
 END_CHECK_DELAY_SECONDS = 15
+# AudD misses a 12 s sample now and then (Olivia Dean, 2026-11-24: the one end check got no match):
+# the check is tried this many times in all, AUDD_MIN_INTERVAL_SECONDS apart, until AudD answers.
+END_CHECK_ATTEMPTS = 3
 # A real gap this close to the end such a timecode implies confirms it without asking (Tom Odell,
 # 2026-11-24: implied end 97 s, gap at 93 s): the song start is stored and the length observed.
 NEEDLE_DROP_END_TOLERANCE_SECONDS = 10.0
@@ -611,6 +614,7 @@ class Passage:
     doubted_start: float | None = None
     implied_end_at: float | None = None
     end_check_at: float | None = None
+    end_check_attempts: int = 0
     audd_hole_skips: int = 0  # AudD samples skipped in a row for stream holes
 
     @property
@@ -964,12 +968,18 @@ class RecognitionEngine:
 
     # ---------------------------------------------------------------- scheduling
 
-    def _schedule(self, passage: Passage) -> None:
+    def _schedule(self, passage: Passage) -> None:  # noqa: PLR0911 - one return per case
         if self.task is not None and not self.task.done():
             return
         if not passage.window_ready:
             return
         if passage.identified:
+            if passage.learning_capped and self._end_check_due(passage, passage.seconds):
+                # learning stopped before the (distrusted) end, but the check is still due
+                self.task = self._spawn(
+                    self._check_end_safely(passage, bytes(passage.pcm), passage.seconds)
+                )
+                return
             if passage.seconds < passage.next_learn_at or passage.learning_capped:
                 return
             if (
@@ -1888,9 +1898,15 @@ class RecognitionEngine:
             and self._audd_wait_reason(passage) is None
         )
 
-    async def _check_end(  # noqa: PLR0911 - each reason to stop returns early
-        self, passage: Passage, pcm: bytes, window_end: float
-    ) -> None:
+    async def _check_end_safely(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+        try:
+            await self._check_end(passage, pcm, window_end)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception("Could not check the end (passage %s)", passage.short_id)
+
+    async def _check_end(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         """
         Ask AudD whether the song ended where its first, distrusted timecode said.
 
@@ -1902,6 +1918,7 @@ class RecognitionEngine:
         if self._wait_for_clean_sample(passage, pcm):
             return  # the check stays due for a cleaner window
         passage.end_check_at = None
+        passage.end_check_attempts += 1
         old_id, old_metadata, doubted = passage.track_id, passage.metadata, passage.doubted_start
         if old_id is None or old_metadata is None or doubted is None:
             return
@@ -1913,7 +1930,15 @@ class RecognitionEngine:
         hit = await self._try_audd(
             passage, pcm, window_end, speed=passage.audd_hit_speed_percent, holes_checked=True
         )
-        if hit is None or not self._is_current(passage) or passage.track_id != old_id:
+        if not self._is_current(passage) or passage.track_id != old_id:
+            return
+        if hit is None:
+            if passage.end_check_attempts < END_CHECK_ATTEMPTS:
+                # again once AudD may be asked: 30 s apart, not the slower cadence of attempts
+                passage.end_check_at = window_end
+                passage.next_audd_at = min(
+                    passage.next_audd_at, passage.seconds + AUDD_MIN_INTERVAL_SECONDS
+                )
             return
         if track_key(hit) in {track_key(old_metadata), *old_metadata.get(ALIASES, [])}:
             self.logger.info(
@@ -1921,6 +1946,15 @@ class RecognitionEngine:
                 describe(old_metadata),
                 passage.short_id,
             )
+            return
+        await self._end_needle_drop(passage, hit, window_end)
+
+    async def _end_needle_drop(
+        self, passage: Passage, hit: dict[str, Any], window_end: float
+    ) -> None:
+        """AudD names another song at the implied end: close the needle-drop play there."""
+        old_id, old_metadata, doubted = passage.track_id, passage.metadata, passage.doubted_start
+        if old_id is None or old_metadata is None or doubted is None:
             return
         timecode = parse_timecode(hit.get("audd_timecode"))
         new_start = (

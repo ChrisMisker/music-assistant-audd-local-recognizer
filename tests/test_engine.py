@@ -22,7 +22,7 @@ from audd_local_recognizer.engine import (
     TimelineEvidence,
 )
 from audd_local_recognizer.fingerprints import QueryMatch
-from tests.conftest import metadata_for, music, silence
+from tests.conftest import PLAYING, metadata_for, music, silence
 
 GAP = 3  # seconds of silence between tracks (min gap is 2 s)
 LIFT = 6  # seconds without music when the needle is lifted and put down again
@@ -1350,6 +1350,24 @@ async def test_a_needle_drop_ending_without_a_gap_is_caught_at_audds_implied_end
     assert {song for song, _ in windows[tracks["Song 3"]]} == {3}
     starts = (h.db.track_metadata(tracks["Song 1"]) or {})["song_starts"]
     assert sorted(starts.values()) == [-100.0]  # the needle drop's start, now stored
+
+
+async def test_the_end_check_tries_again_when_audd_misses(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Olivia Dean (2026-11-24): the one end check got no match from AudD."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 200, 3: 200})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    h.audd_script = [PLAYING, PLAYING, None]  # the hit, the title check, a missed end check
+    await h.play(1, 100, start=100)
+    await h.play(3, 90)
+    assert len(messages(caplog, "Asking AudD whether Artist 1 - Song 1 has ended")) == 2
+    assert messages(caplog, "AudD names Artist 3 - Song 3 from 100s")
+    assert h.published[-1]["title"] == "Song 3"
+    assert len(h.audd_calls) == calls + 4
 
 
 async def test_a_gap_at_audds_implied_end_confirms_the_needle_drop(
