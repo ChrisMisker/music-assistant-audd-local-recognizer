@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from audd_local_recognizer import fingerprints
 from audd_local_recognizer.fingerprints import (
     FINGERPRINT_SAMPLE_RATE,
     PcmFormat,
@@ -274,3 +275,28 @@ def test_stream_holes_of_clean_or_empty_audio() -> None:
     fmt = PcmFormat(1000, 1, 2, "s16le")
     assert stream_holes(np.full(50, 7, dtype="<i2").tobytes(), fmt) == (0, 0.0)
     assert stream_holes(b"", fmt) == (0, 0.0)
+
+
+def test_the_fast_peak_search_gives_exactly_the_same_peaks() -> None:
+    """The diamond filter as repeated cross filters (audalign's peak search, 14x faster)."""
+    from scipy import ndimage  # noqa: PLC0415 - audalign dependency, heavy
+
+    _config, fingerprinter = fingerprints._audalign()
+    rng = np.random.default_rng(7)
+    spectrogram = rng.normal(40, 15, size=(300, 120))
+    spectrogram[rng.random(spectrogram.shape) < 0.05] = 0  # some empty bins, as real ones have
+    diamond = ndimage.iterate_structure(ndimage.generate_binary_structure(2, 1), 20)
+    assert np.array_equal(
+        fingerprinter.maximum_filter(spectrogram, footprint=diamond),
+        ndimage.maximum_filter(spectrogram, footprint=diamond),
+    )
+    background = spectrogram == 0
+    assert np.array_equal(
+        fingerprinter.binary_erosion(background, structure=diamond, border_value=1),
+        ndimage.binary_erosion(background, structure=diamond, border_value=1),
+    )
+    square = np.ones((5, 5), dtype=bool)  # any other footprint goes to scipy unchanged
+    assert np.array_equal(
+        fingerprinter.maximum_filter(spectrogram, footprint=square),
+        ndimage.maximum_filter(spectrogram, footprint=square),
+    )

@@ -433,6 +433,12 @@ class TimelineEvidence:
         self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
         # hashes only a dense (fast start) window holds, not an ordinary one
         self._dense_only: set[str] = set()
+        # Counted clusters per play and center: (votes, lookups, latest votes, ordinary votes,
+        # lookup counted at), and the bins changed since. best() runs on the event loop after
+        # every lookup; recounting every cluster each time grew to ~1 s on the HA Blue for a long
+        # unknown passage (2026-11-24). A changed bin only changes the clusters around it.
+        self._counted: dict[tuple[int, str], dict[int, tuple[int, int, int, int, int]]] = {}
+        self._changed: dict[tuple[int, str], set[int]] = {}
 
     def add(
         self,
@@ -451,7 +457,10 @@ class TimelineEvidence:
         if new_lookup or self.lookups == 0:
             self.lookups += 1
         if dense:
+            before = len(self._dense_only)
             self._dense_only.update(query.keys() - density_subset(query, DENSITY_DIVISOR).keys())
+            if len(self._dense_only) != before:
+                self._counted.clear()  # ordinary votes of every play may have changed
         for row in rows:
             for query_position in query.get(row.fingerprint_hash, ()):
                 shift = (
@@ -460,7 +469,9 @@ class TimelineEvidence:
                     - query_start_seconds
                 )
                 bins = self._bins.setdefault((row.track_id, row.passage_id), {})
-                seen = bins.setdefault(round(shift / COHERENCE_BIN_SECONDS), {})
+                shift_bin = round(shift / COHERENCE_BIN_SECONDS)
+                self._changed.setdefault((row.track_id, row.passage_id), set()).add(shift_bin)
+                seen = bins.setdefault(shift_bin, {})
                 seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
 
     def best(
@@ -476,31 +487,54 @@ class TimelineEvidence:
         for (track, passage_id), bins in sorted(self._bins.items()):
             if track_id is not None and track != track_id:
                 continue
-            for center in sorted(bins):
-                hashes: dict[str, set[int]] = {}
-                for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
-                    for fp_hash, seen in bins.get(index, {}).items():
-                        hashes.setdefault(fp_hash, set()).update(seen)
-                lookups = set().union(*hashes.values())
-                candidate = Coherence(
-                    track,
-                    passage_id,
-                    len(hashes),
-                    len(lookups),
-                    sum(1 for seen in hashes.values() if self.lookups in seen),
-                    center * COHERENCE_BIN_SECONDS,
-                    sum(1 for fp_hash in hashes if fp_hash not in self._dense_only),
-                )
-                if candidate.ordinary_votes < min_ordinary and (
-                    large is None or candidate.votes < large
-                ):
+            counted = self._count(track, passage_id, bins)
+            for center in sorted(counted):
+                votes, lookups, latest, ordinary, counted_at = counted[center]
+                if ordinary < min_ordinary and (large is None or votes < large):
                     continue
-                if best is None or (candidate.votes, candidate.lookups) > (
-                    best.votes,
-                    best.lookups,
-                ):
-                    best = candidate
+                if best is None or (votes, lookups) > (best.votes, best.lookups):
+                    best = Coherence(
+                        track,
+                        passage_id,
+                        votes,
+                        lookups,
+                        latest if counted_at == self.lookups else 0,
+                        center * COHERENCE_BIN_SECONDS,
+                        ordinary,
+                    )
         return best
+
+    def _count(
+        self, track: int, passage_id: str, bins: dict[int, dict[str, set[int]]]
+    ) -> dict[int, tuple[int, int, int, int, int]]:
+        """Return the clusters of one play per center, recounting only around changed bins."""
+        key = (track, passage_id)
+        counted = self._counted.get(key)
+        if counted is None:
+            counted, centers = {}, set(bins)
+        else:
+            changed = self._changed.get(key, set())
+            centers = {
+                center
+                for shift_bin in changed
+                for center in range(shift_bin - COHERENCE_BINS, shift_bin + COHERENCE_BINS + 1)
+                if center in bins
+            }
+        self._changed.pop(key, None)
+        for center in centers:
+            hashes: dict[str, set[int]] = {}
+            for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
+                for fp_hash, seen in bins.get(index, {}).items():
+                    hashes.setdefault(fp_hash, set()).update(seen)
+            counted[center] = (
+                len(hashes),
+                len(set().union(*hashes.values())),
+                sum(1 for seen in hashes.values() if self.lookups in seen),
+                sum(1 for fp_hash in hashes if fp_hash not in self._dense_only),
+                self.lookups,
+            )
+        self._counted[key] = counted
+        return counted
 
     def _song_start_clusters(
         self, track_id: int, song_starts: dict[str, Any]
@@ -564,6 +598,8 @@ class TimelineEvidence:
         """Drop all evidence (after an identification)."""
         self._bins.clear()
         self._dense_only.clear()
+        self._counted.clear()
+        self._changed.clear()
 
 
 @dataclass(frozen=True)
@@ -741,6 +777,7 @@ class RecognitionEngine:
         self._publish = publish
         self._spawn = spawn
         self._run_blocking = run_blocking
+        self._hole_cache: tuple[bytes, tuple[int, float]] | None = None
         self.logger = logger
         self.window_bytes = fmt.bytes_per_second * SAMPLE_SECONDS
         self.stream_seconds = 0.0
@@ -1016,7 +1053,7 @@ class RecognitionEngine:
                 return
             if len(passage.early_windows) < MAX_EARLY_WINDOWS:
                 passage.early_windows.append((window_end, query))
-                passage.early_holes[window_end] = self._holes(pcm)
+                passage.early_holes[window_end] = await self._holes(pcm)
             local = await self._run_blocking(self._db.lookup, query, passage.id)
             if not self._is_current(passage):
                 return
@@ -1110,7 +1147,7 @@ class RecognitionEngine:
         # Learn every lookup window of this passage, including the one AudD identified.
         if not passage.early_windows or passage.early_windows[-1][0] != window_end:
             passage.early_windows.append((window_end, query))
-            passage.early_holes[window_end] = self._holes(pcm)
+            passage.early_holes[window_end] = await self._holes(pcm)
         await self._store_early_windows(passage)
 
     async def _judge_local(self, passage: Passage, local: LocalLookup) -> bool:
@@ -1419,7 +1456,7 @@ class RecognitionEngine:
         if (reason := self._audd_wait_reason(passage)) is not None:
             self.logger.debug("AudD skipped (passage %s): %s", passage.short_id, reason)
             return None
-        if not holes_checked and self._wait_for_clean_sample(passage, pcm):
+        if not holes_checked and await self._wait_for_clean_sample(passage, pcm):
             return None
         passage.audd_attempts += 1
         fast = self.audd_thorough or passage.audd_attempts < AUDD_FAST_ATTEMPTS
@@ -1464,14 +1501,14 @@ class RecognitionEngine:
         passage.audd_hit_speed_percent = speed
         return result
 
-    def _wait_for_clean_sample(self, passage: Passage, pcm: bytes) -> bool:
+    async def _wait_for_clean_sample(self, passage: Passage, pcm: bytes) -> bool:
         """
         Return True if this AudD sample has many stream holes and a cleaner window should be awaited.
 
         Call only when AudD would be asked now. Waits at most AUDD_MAX_HOLE_SKIPS windows in a
         row; after that the sample goes anyway.
         """
-        holes, longest = stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)
+        holes, longest = await self._hole_stats(pcm)
         if holes >= AUDD_HOLES_TO_WAIT and passage.audd_hole_skips < AUDD_MAX_HOLE_SKIPS:
             passage.audd_hole_skips += 1
             self.logger.info(
@@ -1516,7 +1553,7 @@ class RecognitionEngine:
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
                 **sample_stats(pcm, self.fmt),
-                "stream_holes": self._holes(pcm),
+                "stream_holes": await self._holes(pcm),
             }
             await self._save_sample(wav, info)
         except Exception:
@@ -1795,7 +1832,7 @@ class RecognitionEngine:
     async def _learn(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         try:
             hashes = await self._fingerprint(pcm, self._divisor(window_end))
-            await self._store_reference(passage, hashes, window_end, self._holes(pcm))
+            await self._store_reference(passage, hashes, window_end, await self._holes(pcm))
             if passage.position_lookups_left > 0 and self._is_current(passage):
                 await self._decide_position(passage, hashes, window_end)
             if self._duration_check_due(passage, window_end):
@@ -1916,7 +1953,7 @@ class RecognitionEngine:
         start (a soft boundary) and the new passage starts identified; its windows learned
         under the old name move to the new song, as after any soft boundary.
         """
-        if self._wait_for_clean_sample(passage, pcm):
+        if await self._wait_for_clean_sample(passage, pcm):
             return  # the check stays due for a cleaner window
         passage.end_check_at = None
         passage.end_check_attempts += 1
@@ -2004,7 +2041,7 @@ class RecognitionEngine:
 
     async def _check_title(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         """Ask AudD once more about a title that came with an implausible timecode."""
-        if self._wait_for_clean_sample(passage, pcm):
+        if await self._wait_for_clean_sample(passage, pcm):
             return  # the check stays due for a cleaner window
         passage.title_checks_left -= 1
         old_id, old_metadata = passage.track_id, passage.metadata
@@ -2069,7 +2106,7 @@ class RecognitionEngine:
         self, passage: Passage, pcm: bytes, window_end: float
     ) -> None:
         """Ask AudD once for the length of a locally recognized track that has none stored."""
-        if self._wait_for_clean_sample(passage, pcm):
+        if await self._wait_for_clean_sample(passage, pcm):
             return  # the check stays due for a cleaner window
         passage.duration_checks_left -= 1
         self.logger.info(
@@ -2186,9 +2223,24 @@ class RecognitionEngine:
             )
         await self._prune(passage)
 
-    def _holes(self, pcm: bytes) -> int:
-        """Return the stream holes (lost audio) in a window, as stored with its reference."""
-        return stream_holes(pcm, self.fmt, AUDD_HOLE_MIN_SECONDS)[0]
+    async def _holes(self, pcm: bytes) -> int:
+        """Return the number of stream holes in a window (see stream_holes)."""
+        return (await self._hole_stats(pcm))[0]
+
+    async def _hole_stats(self, pcm: bytes) -> tuple[int, float]:
+        """
+        Count a window's stream holes in a worker thread (12 s of PCM: real work on the HA Blue).
+
+        The same window is often asked about twice (AudD check, then learning): the last answer
+        is kept for the same PCM object.
+        """
+        if self._hole_cache is not None and self._hole_cache[0] is pcm:
+            return self._hole_cache[1]
+        stats: tuple[int, float] = await self._run_blocking(
+            stream_holes, pcm, self.fmt, AUDD_HOLE_MIN_SECONDS
+        )
+        self._hole_cache = (pcm, stats)
+        return stats
 
     async def _store_reference(
         self, passage: Passage, hashes: Fingerprints, window_end: float, holes: int | None = None

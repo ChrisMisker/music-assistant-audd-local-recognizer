@@ -244,7 +244,54 @@ def _audalign() -> tuple[Any, Any]:
     # Imported lazily: audalign pulls in a large dependency tree.
     config_module = import_quietly("audalign.config.fingerprint")
     fingerprinter = import_quietly("audalign.recognizers.fingerprint.fingerprinter")
+    _speed_up_peak_search(fingerprinter)
     return config_module.FingerprintConfig, fingerprinter
+
+
+def _speed_up_peak_search(fingerprinter: Any) -> None:
+    """
+    Make audalign's peak search ~14x faster with exactly the same result.
+
+    audalign finds spectrogram peaks with scipy's maximum_filter (and binary_erosion) over a
+    diamond of radius 20 (841 points): 84 % of a fingerprint's time, ~1.5 s per 12 s window on the
+    HA Blue (2026-11-24). A diamond of radius n is the cross (radius 1) applied n times, and
+    dilation/erosion by it is the same as n dilations/erosions by the cross (5 points), so the
+    result is identical: checked on real spectrograms and in the tests. Any other footprint goes
+    to scipy unchanged. Patched in audalign's module only, once.
+    """
+    if getattr(fingerprinter, "_audd_local_fast_peaks", False):
+        return
+    from scipy import ndimage  # noqa: PLC0415 - audalign dependency, heavy
+
+    cross = ndimage.generate_binary_structure(2, 1)
+
+    def diamond_radius(footprint: Any) -> int | None:
+        shape: tuple[int, ...] = getattr(footprint, "shape", ())
+        if len(shape) != 2 or shape[0] != shape[1] or shape[0] % 2 == 0:
+            return None
+        radius = (shape[0] - 1) // 2
+        return (
+            radius if np.array_equal(ndimage.iterate_structure(cross, radius), footprint) else None
+        )
+
+    def maximum_filter(array: Any, size: Any = None, footprint: Any = None, **kwargs: Any) -> Any:
+        radius = diamond_radius(footprint)
+        if size is not None or kwargs or radius is None:
+            return ndimage.maximum_filter(array, size=size, footprint=footprint, **kwargs)
+        result = array
+        for _ in range(radius):
+            result = ndimage.maximum_filter(result, footprint=cross)
+        return result
+
+    def binary_erosion(array: Any, structure: Any = None, **kwargs: Any) -> Any:
+        radius = diamond_radius(structure)
+        if radius is None or set(kwargs) - {"border_value"}:
+            return ndimage.binary_erosion(array, structure=structure, **kwargs)
+        return ndimage.binary_erosion(array, structure=cross, iterations=radius, **kwargs)
+
+    fingerprinter.maximum_filter = maximum_filter
+    fingerprinter.binary_erosion = binary_erosion
+    fingerprinter._audd_local_fast_peaks = True  # noqa: SLF001 - our own marker
 
 
 def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
