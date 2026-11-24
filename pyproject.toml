@@ -161,4 +161,4 @@ mark-parentheses = false
 known-first-party = ["music_assistant", "audd_local_recognizer", "tests"]
 
 [tool.codespell]
-skip = "uv.lock,LICENSE,*/translations/*"
+skip = "uv.lock,LICENSE,*/translations/*,./debug-recordings,./debug-samples"
