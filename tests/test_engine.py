@@ -1329,6 +1329,47 @@ async def test_a_needle_drop_title_is_confirmed_by_the_check(
     assert len(h.audd_calls) == calls + 2
 
 
+async def test_a_needle_drop_ending_without_a_gap_is_caught_at_audds_implied_end(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (Olivia Dean, 2026-11-24): the next track played 2.5 min under the old name."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 200, 3: 200})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    await h.play(1, 100, start=100)  # the needle drop: the last 100 s of song 1
+    await h.play(3, 60)  # the next song follows without a gap
+    assert messages(caplog, "probably another edit's timecode")
+    assert messages(caplog, "If it was a needle drop, Artist 1 - Song 1 ends at 100s")
+    assert messages(caplog, "AudD names Artist 3 - Song 3 from 100s")
+    assert messages(caplog, "Track boundary (no gap): Artist 1 - Song 1")
+    assert h.published[-1]["title"] == "Song 3"
+    windows = learned(h)
+    tracks = {(h.db.track_metadata(t) or {}).get("title"): t for t in windows}
+    assert {song for song, _ in windows[tracks["Song 1"]]} == {1}  # no song 3 under song 1
+    assert {song for song, _ in windows[tracks["Song 3"]]} == {3}
+    starts = (h.db.track_metadata(tracks["Song 1"]) or {})["song_starts"]
+    assert sorted(starts.values()) == [-100.0]  # the needle drop's start, now stored
+
+
+async def test_another_edits_timecode_is_kept_distrusted_after_the_end_check(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """In The Air Tonight: at AudD's implied end the same song still plays."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 300})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    wrong = {**metadata_for(1), "audd_timecode": "02:04", "duration_seconds": 200}
+    h.audd_script = [wrong]  # AudD's first answer puts the song start 100 s before the passage
+    await h.play(1, 160)
+    assert messages(caplog, "If it was a needle drop, Artist 1 - Song 1 ends at 100s")
+    assert messages(caplog, "AudD still names Artist 1 - Song 1")
+    assert messages(caplog, "Track boundary (no gap)") == []
+    assert h.published[-1]["title"] == "Song 1"
+    assert "song_starts" not in (h.db.track_metadata(1) or {})
+
+
 async def test_a_plausible_timecode_needs_no_title_check(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:

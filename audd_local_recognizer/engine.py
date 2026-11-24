@@ -116,6 +116,12 @@ MAX_DURATION_CHECKS_PER_PASSAGE = 2
 # the same intro. Such a title is shown at once and asked once more a little later (at the speed
 # of the hit); another track with a plausible song start then replaces it. About 4 % of AudD hits.
 MAX_TITLE_CHECKS_PER_PASSAGE = 1
+# The same far timecode is also a real needle drop (Olivia Dean, 2026-11-24: needle at 2:09, AudD
+# right, but the next track played 2.5 min under the old name because no gap came). So AudD is
+# asked once more when its own timecode says the song ended: the sample then starts this many
+# seconds after that moment (a full window past it). Another title there is a soft boundary at
+# the new song's start; the same title means the timecode was another edit's. One request.
+END_CHECK_DELAY_SECONDS = 15
 # Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
 # the first ~2 minutes) and stored as references once the passage is identified, so the
 # start of a track is learned too even when identification only succeeds later.
@@ -598,6 +604,9 @@ class Passage:
     audd_hit_speed_percent: float | None = None  # correction of the sample AudD identified
     continuation_start: float | None = None  # song start if it goes on from before the gap
     title_checks_left: int = 0  # AudD's title came with an implausible timecode: ask again
+    # a distrusted AudD timecode: the song start it gave, and when to ask whether the song ended
+    doubted_start: float | None = None
+    end_check_at: float | None = None
     audd_hole_skips: int = 0  # AudD samples skipped in a row for stream holes
 
     @property
@@ -1038,8 +1047,14 @@ class RecognitionEngine:
             passage.audd_attempts,
         )
         # Timing comes from this hit: the timecode is where this sample ended in the song.
+        duration = _track_length(metadata, hit)
         song_start_at, exact = self._audd_song_start(
-            passage, track_id, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
+            passage,
+            track_id,
+            metadata,
+            window_end,
+            parse_timecode(hit.get("audd_timecode")),
+            duration=duration,
         )
         self._identify(
             passage,
@@ -1048,7 +1063,7 @@ class RecognitionEngine:
             via="AudD",
             song_start_at=song_start_at,
             song_start_exact=exact,
-            duration=_track_length(metadata, hit),
+            duration=duration,
         )
         await self._settle(passage)
         # Learn every lookup window of this passage, including the one AudD identified.
@@ -1119,13 +1134,15 @@ class RecognitionEngine:
         start = self.last_play[1] - passage.opened_at
         return start if start < 0 else None
 
-    def _audd_song_start(
+    def _audd_song_start(  # noqa: PLR0913 - the length is optional and keyword-only
         self,
         passage: Passage,
         track_id: int | None,
         metadata: dict[str, Any],
         window_end: float,
         timecode: float | None,
+        *,
+        duration: Any = None,
     ) -> tuple[float | None, bool]:
         """
         Return (song start, exact?) from an AudD timecode, distrusting another edit's timecode.
@@ -1165,8 +1182,33 @@ class RecognitionEngine:
                 passage.short_id,
             )
             passage.title_checks_left = MAX_TITLE_CHECKS_PER_PASSAGE
+            self._plan_end_check(passage, metadata, start, duration, window_end)
             return 0.0, False
         return start, True
+
+    def _plan_end_check(
+        self,
+        passage: Passage,
+        metadata: dict[str, Any],
+        start: float,
+        duration: Any,
+        window_end: float,
+    ) -> None:
+        """Ask AudD again just after the end its own timecode implies (a needle drop?)."""
+        if not _positive(duration):
+            return
+        implied_end = start + duration * self._passage_factor(passage)
+        if implied_end <= window_end:
+            return  # by AudD's timecode the song has ended already: it cannot be right
+        passage.doubted_start = start
+        passage.end_check_at = implied_end + END_CHECK_DELAY_SECONDS
+        self.logger.info(
+            "If it was a needle drop, %s ends at %.0fs: asking AudD again at %.0fs (passage %s)",
+            describe(metadata),
+            implied_end,
+            passage.end_check_at,
+            passage.short_id,
+        )
 
     def _local_song_start(
         self, passage: Passage, metadata: dict[str, Any], coherence: Coherence | None
@@ -1717,6 +1759,8 @@ class RecognitionEngine:
                 await self._check_duration(passage, pcm, window_end)
             elif self._title_check_due(passage):
                 await self._check_title(passage, pcm, window_end)
+            elif self._end_check_due(passage, window_end):
+                await self._check_end(passage, pcm, window_end)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1803,6 +1847,93 @@ class RecognitionEngine:
             and self._is_current(passage)
             and self._audd_wait_reason(passage) is None
         )
+
+    def _end_check_due(self, passage: Passage, window_end: float) -> bool:
+        return (
+            passage.end_check_at is not None
+            and window_end >= passage.end_check_at
+            and self._is_current(passage)
+            and self._audd_wait_reason(passage) is None
+        )
+
+    async def _check_end(  # noqa: PLR0911 - each reason to stop returns early
+        self, passage: Passage, pcm: bytes, window_end: float
+    ) -> None:
+        """
+        Ask AudD whether the song ended where its first, distrusted timecode said.
+
+        Another title that started after the passage began: the first timecode was right (a
+        needle drop). The old play gets that song start, the passage closes at the new song's
+        start (a soft boundary) and the new passage starts identified; its windows learned
+        under the old name move to the new song, as after any soft boundary.
+        """
+        if self._wait_for_clean_sample(passage, pcm):
+            return  # the check stays due for a cleaner window
+        passage.end_check_at = None
+        old_id, old_metadata, doubted = passage.track_id, passage.metadata, passage.doubted_start
+        if old_id is None or old_metadata is None or doubted is None:
+            return
+        self.logger.info(
+            "Asking AudD whether %s has ended (passage %s)",
+            describe(old_metadata),
+            passage.short_id,
+        )
+        hit = await self._try_audd(
+            passage, pcm, window_end, speed=passage.audd_hit_speed_percent, holes_checked=True
+        )
+        if hit is None or not self._is_current(passage) or passage.track_id != old_id:
+            return
+        if track_key(hit) in {track_key(old_metadata), *old_metadata.get(ALIASES, [])}:
+            self.logger.info(
+                "AudD still names %s: its first timecode was another edit's (passage %s)",
+                describe(old_metadata),
+                passage.short_id,
+            )
+            return
+        timecode = parse_timecode(hit.get("audd_timecode"))
+        new_start = (
+            None if timecode is None else window_end - timecode * self._passage_factor(passage)
+        )
+        if new_start is None or not 0 < new_start < window_end:
+            self.logger.info(
+                "AudD now names %s, but not at a plausible position: keeping %s (passage %s)",
+                describe(hit),
+                describe(old_metadata),
+                passage.short_id,
+            )
+            return
+        new_id = await self._run_blocking(self._db.upsert_track, hit)
+        metadata = await self._run_blocking(self._db.track_metadata, new_id) or hit
+        if not self._is_current(passage) or passage.track_id != old_id or new_id == old_id:
+            return
+        self.logger.info(
+            "AudD names %s from %.0fs: %s was a needle drop and ended there (passage %s)",
+            describe(metadata),
+            new_start,
+            describe(old_metadata),
+            passage.short_id,
+        )
+        # the first timecode was right: this play started there
+        passage.song_start_at, passage.song_start_exact = doubted, True
+        passage.track_end_at = new_start
+        await self._settle(passage)
+        if not self._is_current(passage):
+            return
+        closed_at = passage.seconds
+        self._end_at_track_end(passage)
+        following = self.passage
+        if following is None:
+            return
+        self._identify(
+            following,
+            new_id,
+            metadata,
+            via="AudD (end check)",
+            song_start_at=new_start - closed_at,
+            song_start_exact=True,
+            duration=_track_length(metadata, hit),
+        )
+        await self._settle(following)
 
     async def _check_title(self, passage: Passage, pcm: bytes, window_end: float) -> None:
         """Ask AudD once more about a title that came with an implausible timecode."""
@@ -1919,7 +2050,12 @@ class RecognitionEngine:
             passage.short_id,
         )
         hit_start, exact = self._audd_song_start(
-            passage, track_id, metadata, window_end, parse_timecode(hit.get("audd_timecode"))
+            passage,
+            track_id,
+            metadata,
+            window_end,
+            parse_timecode(hit.get("audd_timecode")),
+            duration=_track_length(metadata, hit),
         )
         song_start_at = hit_start if exact else passage.song_start_at
         passage.track_end_at = None
