@@ -7,7 +7,9 @@ shows up as 100 ms holes of exact zeros in every source at once (2026-11-24). Th
 stall with what the provider was doing at that moment, so a stall can be tied to our own work
 (fingerprinting, database, AudD) or ruled out. It also times every piece of work it is told about
 and logs a summary (count, median, worst) every SUMMARY_SECONDS, so a version that makes something
-heavier shows up at once. MA-independent: needs only asyncio and a logger.
+heavier shows up at once. With sample_stacks, a helper thread also takes a few stack samples
+of the loop's thread while a stall lasts, to name the code behind stalls that are not ours.
+MA-independent: needs only asyncio and a logger.
 """
 
 from __future__ import annotations
@@ -16,7 +18,10 @@ import asyncio
 import contextlib
 import gc
 import logging
+import sys
+import threading
 import time
+import traceback
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
@@ -26,6 +31,23 @@ INTERVAL_SECONDS = 0.02
 STALL_SECONDS = 0.05
 # A summary line this often while stalls happen, so long sessions stay readable.
 SUMMARY_SECONDS = 300.0
+# stack samples of the loop's thread during a stall: the first when the loop is this late, then
+# every STACK_EVERY_SECONDS, at most STACK_SAMPLES per stall, each with its innermost frames
+STACK_AFTER_SECONDS = 0.05
+STACK_EVERY_SECONDS = 0.03
+STACK_SAMPLES = 4
+STACK_FRAMES = 14
+
+
+def _format_stack(frame: Any) -> str:
+    """Name the frames outermost first, file names shortened to the package path."""
+    parts = []
+    for entry in traceback.extract_stack(frame)[-STACK_FRAMES:]:
+        name = entry.filename.replace("\\", "/")
+        name = name.split("site-packages/")[-1] if "site-packages/" in name else name
+        name = "/".join(name.split("/")[-3:])
+        parts.append(f"{name}:{entry.lineno} {entry.name}")
+    return " > ".join(parts)
 
 
 class LoopWatch:
@@ -42,24 +64,45 @@ class LoopWatch:
         self._since = time.monotonic()
         self._durations: dict[str, list[float]] = {}  # label -> seconds, since the last summary
         self._gc_started = 0.0
+        # stack sampling: the loop's ticks (count, time) and samples taken by the helper thread
+        self._sample_stacks = False
+        self._tick = 0
+        self._tick_at = 0.0
+        self._loop_thread: int | None = None
+        self._samples: list[tuple[int, float, str]] = []
+        self._sampler: threading.Thread | None = None
+        self._sampler_stop = threading.Event()
 
     @property
     def running(self) -> bool:
         """Return whether the watcher is measuring."""
         return self._task is not None and not self._task.done()
 
-    def start(self) -> None:
-        """Start measuring (no-op when already running)."""
+    def start(self, *, sample_stacks: bool = False) -> None:
+        """Start measuring (no-op when already running); sample_stacks also samples stalls."""
         if not self.running:
             self._stalls, self._worst, self._since = 0, 0.0, time.monotonic()
             self._task = asyncio.get_running_loop().create_task(self._run())
             if self._on_gc not in gc.callbacks:
                 gc.callbacks.append(self._on_gc)
+        if sample_stacks and (self._sampler is None or not self._sampler.is_alive()):
+            self._sample_stacks = True
+            self._loop_thread = threading.get_ident()
+            self._tick_at = time.monotonic()
+            self._sampler_stop.clear()
+            self._sampler = threading.Thread(
+                target=self._sample, name="audd-local-stall-stacks", daemon=True
+            )
+            self._sampler.start()
 
     def stop(self) -> None:
         """Stop measuring and log the totals."""
         if self._on_gc in gc.callbacks:
             gc.callbacks.remove(self._on_gc)
+        if self._sampler is not None:
+            self._sampler_stop.set()
+            self._sampler = None
+            self._sample_stacks = False
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -137,14 +180,35 @@ class LoopWatch:
             f"{label} x{count}" if count > 1 else label for label, count in sorted(labels.items())
         )
 
+    def _sample(self) -> None:
+        """Take a few stack samples of the loop thread while it is late (helper thread)."""
+        last_tick, taken, next_at = -1, 0, STACK_AFTER_SECONDS
+        while not self._sampler_stop.wait(0.01):
+            tick, ticked_at = self._tick, self._tick_at
+            late = time.monotonic() - ticked_at - INTERVAL_SECONDS
+            if tick != last_tick:
+                last_tick, taken, next_at = tick, 0, STACK_AFTER_SECONDS
+            if late < next_at or taken >= STACK_SAMPLES or self._loop_thread is None:
+                continue
+            frame = sys._current_frames().get(self._loop_thread)  # noqa: SLF001 - diagnostics
+            if frame is not None:
+                self._samples.append((tick, late, _format_stack(frame)))
+            del frame
+            taken += 1
+            next_at = late + STACK_EVERY_SECONDS
+
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
         last_summary = time.monotonic()
         while True:
             before = loop.time()
+            self._tick += 1
+            self._tick_at = time.monotonic()
+            tick = self._tick
             await asyncio.sleep(INTERVAL_SECONDS)
             lag = loop.time() - before - INTERVAL_SECONDS
             now = time.monotonic()
+            samples, self._samples = self._samples, []
             if lag >= STALL_SECONDS:
                 self._stalls += 1
                 self._worst = max(self._worst, lag)
@@ -153,6 +217,9 @@ class LoopWatch:
                     round(lag * 1000),
                     self._describe(now, lag),
                 )
+                for sampled_tick, late, stack in samples:
+                    if sampled_tick == tick:
+                        self._logger.info("  stall stack at +%d ms: %s", round(late * 1000), stack)
             if now - last_summary >= SUMMARY_SECONDS:
                 last_summary = now
                 self._summary("so far")

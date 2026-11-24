@@ -37,6 +37,7 @@ from .recording import (
     remove_expired_recordings,
     split_action,
 )
+from .snapshots import DatabaseSnapshots
 from .sources import selected_match, source_key
 
 if TYPE_CHECKING:
@@ -59,6 +60,9 @@ RECORD_ONLY_FLAG = "record_only"
 # Leaner still: with this file, new sessions are not recognized and not recorded either; only the
 # event-loop stalls are timed (every 100 ms silence lines up with a stall, so stalls suffice).
 WATCH_ONLY_FLAG = "watch_only"
+# With this file, the stall watcher also logs where MA's event loop thread was during each stall
+# (a few stack samples), to name the code behind the stalls that are "nothing of ours".
+STALL_STACKS_FLAG = "stall_stacks"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
@@ -79,6 +83,8 @@ MAX_RECORDING_MINUTES = 1440  # 24 h: two days of listening between two fetches 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
 DEFAULT_MIN_GAP_SECONDS = 2
+# after a session ends, wait this long before copying the database (late results land first)
+SNAPSHOT_DELAY_SECONDS = 5.0
 
 
 def _whole_seconds(value: Any) -> int | None:
@@ -118,6 +124,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         # with input recording on or debug logging (debug aids), stalls of MA's event loop and
         # the time our work takes are logged too
         self._loopwatch = LoopWatch(self.logger)
+        # the database between sessions, so a recording's start state needs no copy (debug aid)
+        self._snapshots: DatabaseSnapshots | None = None
+        self._snapshot_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -139,6 +148,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 SCHEMA_VERSION,
             )
         await self._remove_expired_recordings()
+        self._snapshots = DatabaseSnapshots(self._db, storage_dir)
+        if self.config.get_value(CONF_RECORD_INPUT):
+            # MA just started (nothing plays yet): the first recording can then reuse this copy
+            self._save_snapshot_soon()
+        else:
+            await asyncio.to_thread(self._snapshots.remove)
         stats = await asyncio.to_thread(self._db.stats)
         self.logger.info(
             "AudD + Local Fingerprints v%s: db=%s tracks=%d references=%d landmarks=%d "
@@ -486,12 +501,19 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 WATCH_ONLY_FLAG if watch_only else RECORD_ONLY_FLAG,
                 "only timed (event-loop stalls)" if watch_only else "recorded and timed",
             )
+        stall_stacks = await asyncio.to_thread((self._storage_dir() / STALL_STACKS_FLAG).exists)
+        if stall_stacks:
+            self.logger.warning(
+                "Stall stacks (%s exists): each event-loop stall also logs where the loop was",
+                STALL_STACKS_FLAG,
+            )
         if (
             watch_only
+            or stall_stacks
             or self.config.get_value(CONF_RECORD_INPUT)
             or self.logger.isEnabledFor(logging.DEBUG)
         ):
-            self._loopwatch.start()  # a debug aid: stalls and timings in the log
+            self._loopwatch.start(sample_stacks=stall_stacks)  # debug aid: stalls and timings
         if self.config.get_value(CONF_RECORD_INPUT) and not watch_only:
             await self._start_recording(session_id, fmt)
         return True
@@ -531,16 +553,26 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 max_seconds // 60,
             )
             return
-        # the database as it is when the recording starts: replaying against a later copy would
-        # include what was learned (and pruned) during this very recording
-        if session_id not in self._record_only:  # nothing to replay against in the experiments
-            async with self._loopwatch.busy("database copy"):
-                await asyncio.to_thread(
-                    self._db.backup_to, folder / f"{recorder.started}_db.sqlite3"
-                )
         self._recorders[session_id] = (recorder, asyncio.Lock())
         log_path = folder / f"{recorder.started}.log"
         self._session_logs[session_id] = await asyncio.to_thread(SessionLog, self.logger, log_path)
+        # the database as it is when the recording starts: replaying against a later copy would
+        # include what was learned (and pruned) during this very recording
+        if session_id not in self._record_only and self._snapshots is not None:
+            if (pending := self._snapshot_task) is not None and not pending.done():
+                await asyncio.shield(pending)  # a copy of the session before: let it finish
+            started = time.monotonic()
+            async with self._loopwatch.busy("database copy"):
+                reused = await asyncio.to_thread(
+                    self._snapshots.place, folder / f"{recorder.started}_db.sqlite3"
+                )
+            self.logger.info(
+                "Database at the start of this recording: %s (%.1fs)",
+                "the copy made after the previous session (unchanged since)"
+                if reused
+                else "copied now (changed since the last copy)",
+                time.monotonic() - started,
+            )
         self.logger.info(
             "Recording the input of session %s to %s (%.0f of %d minutes left); provider v%s, "
             "source %dHz/%dch/%s, speed correction %+.1f%%, fast start %s",
@@ -567,6 +599,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if action == "split":
             await self._stop_recording(session_id)
             self._split_waiting.add(session_id)
+            self._save_snapshot_soon()  # silence now: the next recording can reuse this copy
             self.logger.info(
                 "Recording split after %ds of silence; the next recording starts with the music",
                 int(RECORDING_SPLIT_SILENCE_SECONDS),
@@ -600,6 +633,33 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 await asyncio.to_thread(recorder.close)
         if (session_log := self._session_logs.pop(session_id, None)) is not None:
             await asyncio.to_thread(session_log.close)
+
+    def _save_snapshot_soon(self) -> None:
+        """Copy the database for the next recording while nothing plays (a debug aid)."""
+        if self._snapshots is None or not self.config.get_value(CONF_RECORD_INPUT):
+            return
+        if self._recorders:  # another source is recording, so music plays: copy later
+            return
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        self._snapshot_task = asyncio.get_running_loop().create_task(self._save_snapshot())
+
+    async def _save_snapshot(self) -> None:
+        if self._snapshots is None:
+            return
+        await asyncio.sleep(SNAPSHOT_DELAY_SECONDS)  # late results of the session land first
+        started = time.monotonic()
+        try:
+            async with self._loopwatch.busy("database copy (between sessions)"):
+                copied = await asyncio.to_thread(self._snapshots.save)
+        except Exception:
+            self.logger.warning("Could not copy the database for the next recording", exc_info=True)
+            return
+        self.logger.debug(
+            "Database copy for the next recording: %s (%.1fs)",
+            "made" if copied else "not needed (unchanged, or changed while copying)",
+            time.monotonic() - started,
+        )
 
     async def _save_sample(self, wav: bytes, info: dict[str, Any]) -> None:
         async with self._loopwatch.busy("debug sample"):
@@ -647,6 +707,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         """Unload; when the user removes the provider, also delete its fingerprint database."""
         for session_id in list(self._recorders) + list(self._session_logs):
             await self._stop_recording(session_id)
+        if self._snapshot_task is not None:
+            self._snapshot_task.cancel()
         await super().unload(is_removed)
         if is_removed:
             storage_dir = self._storage_dir()
@@ -677,10 +739,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             self.logger.info("Analysis ended: session=%s", session_id)
         if not self._engines:
             self._loopwatch.stop()
+        recorded = session_id in self._recorders and session_id not in self._record_only
         await self._stop_recording(session_id)
         self._split_waiting.discard(session_id)
         self._record_only.discard(session_id)
         self._formats.pop(session_id, None)
+        if recorded:
+            self._save_snapshot_soon()  # the session ended: copy now, not when the next starts
         await super().cancel(session_id)
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:

@@ -6,10 +6,12 @@ All methods are blocking; call them through a thread offload from async code.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import sqlite3
+import time
 import unicodedata
 from collections import Counter
 from contextlib import closing, contextmanager
@@ -710,14 +712,44 @@ class FingerprintDatabase:
         result = self._update_metadata(track_id, change)
         return float(result) if result is not None else None
 
-    def backup_to(self, target: Path) -> None:
-        """Write a consistent copy of the database to target (safe while it is in use)."""
+    def backup_to(self, target: Path, *, pages: int = -1, pause: float = 0.0) -> None:
+        """
+        Write a consistent copy of the database to target (safe while it is in use).
+
+        With pages > 0 it copies that many pages per step and sleeps pause seconds between
+        steps, so a big copy never floods the disk (the HA Blue stalls MA's loop otherwise).
+        """
         target.parent.mkdir(parents=True, exist_ok=True)
+
+        def rest(_status: int, remaining: int, _total: int) -> None:
+            if remaining and pause > 0:
+                time.sleep(pause)
+
         with (
             closing(sqlite3.connect(self.path, timeout=30)) as src,
             closing(sqlite3.connect(target)) as dst,
         ):
-            src.backup(dst)
+            src.backup(dst, pages=pages, progress=rest)
+
+    def content_stamp(self) -> str:
+        """
+        Return a short digest of everything that decides recognition (tracks, references).
+
+        Equal stamps mean equal content, so a copy taken at one stamp can stand in for the
+        database at a later moment with the same stamp. Landmarks are covered through their
+        reference rows (written once with them, deleted with them).
+        """
+        digest = hashlib.sha256()
+        with self._transaction() as db:
+            digest.update(repr(db.execute("PRAGMA user_version").fetchone()).encode())
+            for row in db.execute("SELECT id, track_key, metadata_json FROM tracks ORDER BY id"):
+                digest.update(repr(row).encode())
+            for row in db.execute(
+                "SELECT id, track_id, passage_id, passage_offset_seconds, landmark_count, "
+                "stream_holes FROM reference_windows ORDER BY id"
+            ):
+                digest.update(repr(row).encode())
+        return digest.hexdigest()[:32]
 
     def stats(self) -> DatabaseStats:
         """Return row counts."""

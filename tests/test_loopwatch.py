@@ -95,3 +95,35 @@ def test_warm_up_runs() -> None:
     from audd_local_recognizer.fingerprints import warm_up  # noqa: PLC0415
 
     warm_up()
+
+
+def _hold_the_loop(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+async def test_stall_stacks_name_the_code_that_held_the_loop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    watch = LoopWatch(logging.getLogger("test.loopwatch"))
+    watch.start(sample_stacks=True)
+    await asyncio.sleep(0.05)
+    _hold_the_loop(0.2)
+    await asyncio.sleep(0.05)
+    watch.stop()
+    stacks = [r.getMessage() for r in caplog.records if "stall stack at" in r.getMessage()]
+    assert stacks
+    assert all("_hold_the_loop" in stack for stack in stacks)
+    assert len(stacks) <= loopwatch.STACK_SAMPLES
+
+
+async def test_no_stall_stacks_without_asking(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    watch = LoopWatch(logging.getLogger("test.loopwatch"))
+    watch.start()
+    await asyncio.sleep(0.05)
+    _hold_the_loop(0.15)
+    await asyncio.sleep(0.05)
+    watch.stop()
+    assert any("Event loop stalled" in r.getMessage() for r in caplog.records)
+    assert not any("stall stack at" in r.getMessage() for r in caplog.records)
