@@ -122,6 +122,9 @@ MAX_TITLE_CHECKS_PER_PASSAGE = 1
 # seconds after that moment (a full window past it). Another title there is a soft boundary at
 # the new song's start; the same title means the timecode was another edit's. One request.
 END_CHECK_DELAY_SECONDS = 15
+# A real gap this close to the end such a timecode implies confirms it without asking (Tom Odell,
+# 2026-11-24: implied end 97 s, gap at 93 s): the song start is stored and the length observed.
+NEEDLE_DROP_END_TOLERANCE_SECONDS = 10.0
 # Lookup fingerprints of a still-unknown passage are kept (at most this many windows, i.e.
 # the first ~2 minutes) and stored as references once the passage is identified, so the
 # start of a track is learned too even when identification only succeeds later.
@@ -606,6 +609,7 @@ class Passage:
     title_checks_left: int = 0  # AudD's title came with an implausible timecode: ask again
     # a distrusted AudD timecode: the song start it gave, and when to ask whether the song ended
     doubted_start: float | None = None
+    implied_end_at: float | None = None
     end_check_at: float | None = None
     audd_hole_skips: int = 0  # AudD samples skipped in a row for stream holes
 
@@ -834,6 +838,7 @@ class RecognitionEngine:
             return
         self._commit_pending_length()
         self.last_close_at = self.stream_seconds
+        self._confirm_needle_drop(passage, level, chunk_seconds)
         if passage.track_id is not None and passage.song_start_at is not None:
             self.last_play = (passage.track_id, passage.opened_at + passage.song_start_at)
         self.logger.info(
@@ -869,6 +874,32 @@ class RecognitionEngine:
                 length,
             )
             self.pending_length = (previous.track_id, length)
+
+    def _confirm_needle_drop(self, passage: Passage, level: float, chunk_seconds: float) -> None:
+        """Trust a distrusted AudD timecode after all when a real gap comes where it said."""
+        if (
+            passage.doubted_start is None
+            or passage.implied_end_at is None
+            or passage.track_id is None
+            or passage.song_start_exact
+            or level <= DROPOUT_DBFS
+        ):
+            return
+        song_end = passage.seconds - (self.gap.silence_seconds - chunk_seconds)
+        if abs(song_end - passage.implied_end_at) > NEEDLE_DROP_END_TOLERANCE_SECONDS:
+            return
+        self.logger.info(
+            "The gap at %.0fs fits the end AudD's timecode implied (%.0fs): %s was a needle drop "
+            "(song started %.0fs before passage %s)",
+            song_end,
+            passage.implied_end_at,
+            describe(passage.metadata),
+            -passage.doubted_start,
+            passage.short_id,
+        )
+        passage.song_start_at, passage.song_start_exact = passage.doubted_start, True
+        passage.end_check_at = None
+        self._in_background(self._settle(passage))
 
     @staticmethod
     def _soft_boundary_tail(passage: Passage, level: float) -> ClosedPlay | None:
@@ -1201,6 +1232,7 @@ class RecognitionEngine:
         if implied_end <= window_end:
             return  # by AudD's timecode the song has ended already: it cannot be right
         passage.doubted_start = start
+        passage.implied_end_at = implied_end
         passage.end_check_at = implied_end + END_CHECK_DELAY_SECONDS
         self.logger.info(
             "If it was a needle drop, %s ends at %.0fs: asking AudD again at %.0fs (passage %s)",

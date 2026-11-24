@@ -1352,6 +1352,25 @@ async def test_a_needle_drop_ending_without_a_gap_is_caught_at_audds_implied_end
     assert sorted(starts.values()) == [-100.0]  # the needle drop's start, now stored
 
 
+async def test_a_gap_at_audds_implied_end_confirms_the_needle_drop(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Tom Odell (2026-11-24): AudD's end 97 s, the gap at 93 s. Store the start, observe the length."""
+    caplog.set_level(logging.INFO)
+    h = make_harness(durations={1: 200})
+    await h.play(2, 30)
+    await h.quiet(GAP)
+    calls = len(h.audd_calls)
+    await h.play(1, 100, start=100)  # the needle drop: the last 100 s of song 1, then a gap
+    await h.quiet(GAP)
+    await h.settle()
+    assert messages(caplog, "The gap at 100s fits the end AudD's timecode implied (100s)")
+    assert messages(caplog, "Asking AudD whether") == []  # no request needed
+    assert len(h.audd_calls) == calls + 2  # the hit and the title check
+    starts = (h.db.track_metadata(2) or {}).get("song_starts", {})
+    assert sorted(starts.values()) == [-100.0]
+
+
 async def test_another_edits_timecode_is_kept_distrusted_after_the_end_check(
     make_harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
