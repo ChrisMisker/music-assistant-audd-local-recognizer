@@ -11,6 +11,7 @@ position in the window), which gives exact offset votes in the real database.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.util
 import io
 import logging
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
+from audd_local_recognizer import engine as eng
 from audd_local_recognizer.database import FingerprintDatabase
 from audd_local_recognizer.engine import GapSettings, RecognitionEngine
 from audd_local_recognizer.fingerprints import Fingerprints, PcmFormat
@@ -37,6 +39,26 @@ if importlib.util.find_spec("music_assistant") is not None:
 RATE = 100
 FMT = PcmFormat(sample_rate=RATE, channels=1, sample_width=2, content_type="s16le")
 PLAYING = "playing"  # an audd_script entry: answer that call with what is playing
+
+# Work on a whole window (seconds of PCM) must never run on the event loop: on the HA Blue it
+# stalled MA's loop and Sendspin then put 100 ms of silence into the live source (2026-11-24).
+# The harness runs offloaded work inline but marks it, and these engine functions refuse to run
+# unmarked. Add every new window-sized helper the engine calls to WINDOW_SIZED_WORK.
+OFFLOADED: contextvars.ContextVar[bool] = contextvars.ContextVar("offloaded", default=False)
+WINDOW_SIZED_WORK = ("pcm_to_wav", "stream_holes", "sample_stats")
+
+
+@pytest.fixture(autouse=True)
+def _window_work_stays_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail a test when the engine runs window-sized work on the event loop."""
+    for name in WINDOW_SIZED_WORK:
+        original = getattr(eng, name)
+
+        def guarded(*args: Any, _original: Any = original, _name: str = name) -> Any:
+            assert OFFLOADED.get(), f"{_name} ran on the event loop: use run_blocking"
+            return _original(*args)
+
+        monkeypatch.setattr(eng, name, guarded)
 
 
 def music(song: int, second: int) -> bytes:
@@ -125,7 +147,11 @@ class Harness:
     async def _run_blocking(self, func: Any, *args: Any) -> Any:
         if self.lookup_gate is not None and getattr(func, "__name__", "") == "lookup":
             await self.lookup_gate.wait()
-        return func(*args)
+        token = OFFLOADED.set(True)
+        try:
+            return func(*args)
+        finally:
+            OFFLOADED.reset(token)
 
     async def _fingerprint(self, pcm: bytes, divisor: int = 16) -> Fingerprints:
         self.divisors.append(divisor)

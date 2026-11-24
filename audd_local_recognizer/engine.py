@@ -1552,7 +1552,7 @@ class RecognitionEngine:
                 "speed_correction_percent": self._attempt_speed(passage.audd_attempts),
                 "source_format": f"{self.fmt.sample_rate}Hz/{self.fmt.channels}ch/"
                 f"{self.fmt.content_type}",
-                **sample_stats(pcm, self.fmt),
+                **(await self._run_blocking(sample_stats, pcm, self.fmt)),
                 "stream_holes": await self._holes(pcm),
             }
             await self._save_sample(wav, info)
