@@ -588,6 +588,11 @@ class TimelineEvidence:
         return clusters
 
     def song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
+        """Return the strongest song start of a track (see _song_start)."""
+        with self._timed("evidence position"):
+            return self._song_start(track_id, song_starts)
+
+    def _song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
         """
         Return the strongest song start of a track, from the plays with a stored song start.
 
@@ -613,6 +618,12 @@ class TimelineEvidence:
         self, track_id: int, song_starts: dict[str, Any], start_seconds: float, tolerance: float
     ) -> int:
         """Return the votes of the strongest song start within tolerance of start_seconds."""
+        with self._timed("evidence position"):
+            return self._votes_near(track_id, song_starts, start_seconds, tolerance)
+
+    def _votes_near(
+        self, track_id: int, song_starts: dict[str, Any], start_seconds: float, tolerance: float
+    ) -> int:
         return max(
             (
                 v

@@ -542,7 +542,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if (entry := self._recorders.get(session_id)) is None:
             return
         recorder, lock = entry
-        recorder.add(pcm_chunk)
+        with self._loopwatch.timed("recording chunk"):
+            recorder.add(pcm_chunk)
         if recorder.buffered_seconds < FLUSH_SECONDS:
             return
         async with lock, self._loopwatch.busy("recording"):
@@ -618,7 +619,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
         if (engine := self._engines.get(session_id)) is not None:
-            engine.feed(pcm_chunk)
+            with self._loopwatch.timed("chunk"):  # level, gap detection, buffering
+                engine.feed(pcm_chunk)
             if self._recorders or self._split_waiting:
                 await self._maybe_split_recording(session_id, engine)
         if self._recorders:
