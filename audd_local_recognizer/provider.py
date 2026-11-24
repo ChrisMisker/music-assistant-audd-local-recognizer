@@ -56,6 +56,9 @@ RECORDINGS_SUBDIR = "recordings"
 # sessions are only recorded and timed, never recognized. It shows whether event-loop stalls (and
 # Sendspin's 100 ms silences) happen without our work at all (2026-11-24).
 RECORD_ONLY_FLAG = "record_only"
+# Leaner still: with this file, new sessions are not recognized and not recorded either; only the
+# event-loop stalls are timed (every 100 ms silence lines up with a stall, so stalls suffice).
+WATCH_ONLY_FLAG = "watch_only"
 
 CONF_ALL_AUDIO_SOURCES = "all_audio_sources"
 CONF_AUDIO_SOURCES = "audio_sources"
@@ -473,16 +476,23 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             fast_start_seconds=FAST_START_SECONDS if self._fast_start() else 0.0,
             audd_thorough=bool(self.config.get_value(CONF_AUDD_THOROUGH)),
         )
-        if await asyncio.to_thread((self._storage_dir() / RECORD_ONLY_FLAG).exists):
+        watch_only = await asyncio.to_thread((self._storage_dir() / WATCH_ONLY_FLAG).exists)
+        if watch_only or await asyncio.to_thread((self._storage_dir() / RECORD_ONLY_FLAG).exists):
             self._record_only.add(session_id)
             self.logger.warning(
-                "Record-only mode (%s exists): this session is recorded and timed, but not "
-                "recognized (no fingerprints, no database, no AudD)",
-                RECORD_ONLY_FLAG,
+                "%s mode (%s exists): this session is %s, but not recognized (no fingerprints, "
+                "no database, no AudD)",
+                "Watch-only" if watch_only else "Record-only",
+                WATCH_ONLY_FLAG if watch_only else RECORD_ONLY_FLAG,
+                "only timed (event-loop stalls)" if watch_only else "recorded and timed",
             )
-        if self.config.get_value(CONF_RECORD_INPUT) or self.logger.isEnabledFor(logging.DEBUG):
+        if (
+            watch_only
+            or self.config.get_value(CONF_RECORD_INPUT)
+            or self.logger.isEnabledFor(logging.DEBUG)
+        ):
             self._loopwatch.start()  # a debug aid: stalls and timings in the log
-        if self.config.get_value(CONF_RECORD_INPUT):
+        if self.config.get_value(CONF_RECORD_INPUT) and not watch_only:
             await self._start_recording(session_id, fmt)
         return True
 
@@ -523,8 +533,11 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             return
         # the database as it is when the recording starts: replaying against a later copy would
         # include what was learned (and pruned) during this very recording
-        async with self._loopwatch.busy("database copy"):
-            await asyncio.to_thread(self._db.backup_to, folder / f"{recorder.started}_db.sqlite3")
+        if session_id not in self._record_only:  # nothing to replay against in the experiments
+            async with self._loopwatch.busy("database copy"):
+                await asyncio.to_thread(
+                    self._db.backup_to, folder / f"{recorder.started}_db.sqlite3"
+                )
         self._recorders[session_id] = (recorder, asyncio.Lock())
         log_path = folder / f"{recorder.started}.log"
         self._session_logs[session_id] = await asyncio.to_thread(SessionLog, self.logger, log_path)
