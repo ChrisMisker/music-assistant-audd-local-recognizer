@@ -25,7 +25,7 @@ def test_manifest_basics() -> None:
     assert manifest["domain"] == DOMAIN
     assert manifest["type"] == "audio_analysis"
     assert manifest["codeowners"]
-    assert manifest["requirements"] == ["audalign==1.3.2", "soxr==1.1.0"]
+    assert manifest["requirements"] == ["audalign==1.3.2"]
     # the manifest must disclose that audio is sent to AudD (catalog rule: no undisclosed behaviour)
     assert "AudD" in manifest["description"]
     assert _json(PROVIDER / "strings.json")["manifest"]["description"] == manifest["description"]

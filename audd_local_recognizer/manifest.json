@@ -8,8 +8,7 @@
     "@ChrisMisker"
   ],
   "requirements": [
-    "audalign==1.3.2",
-    "soxr==1.1.0"
+    "audalign==1.3.2"
   ],
   "documentation": "https://github.com/ChrisMisker/music-assistant-audd-local-recognizer#readme",
   "multi_instance": false
