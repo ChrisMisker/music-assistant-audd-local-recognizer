@@ -27,6 +27,8 @@ from .debug_samples import write_debug_sample
 from .engine import PLACEHOLDER, GapSettings, RecognitionEngine
 from .fingerprints import DENSITY_DIVISOR, Fingerprints, PcmFormat, fingerprint_window, warm_up
 from .loopwatch import LoopWatch
+from .quiet_gc import SILENCE_SECONDS as QUIET_GC_SILENCE_SECONDS
+from .quiet_gc import QuietCollector
 from .recording import (
     FLUSH_SECONDS,
     MAX_RECORDING_SECONDS,
@@ -127,6 +129,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         # the database between sessions, so a recording's start state needs no copy (debug aid)
         self._snapshots: DatabaseSnapshots | None = None
         self._snapshot_task: asyncio.Task[None] | None = None
+        # Python's full garbage collection, run in a silence between tracks (see quiet_gc.py)
+        self._quiet_gc = QuietCollector()
+        self._gc_done_in_gap: set[str] = set()  # sessions whose current silence had its turn
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -634,6 +639,28 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         if (session_log := self._session_logs.pop(session_id, None)) is not None:
             await asyncio.to_thread(session_log.close)
 
+    def _collect_garbage_soon(self) -> None:
+        """Run Python's full garbage collection now if none of our sources is in the music."""
+        quiet = not self._record_only and all(
+            engine.passage is None for engine in self._engines.values()
+        )
+        if self._quiet_gc.due(quiet=quiet):
+            self._quiet_gc.running = True
+            self.mass.create_task(self._collect_garbage(), task_name=f"{self.domain}_gc")
+
+    async def _collect_garbage(self) -> None:
+        started = time.monotonic()
+        try:
+            async with self._loopwatch.busy("gc in a silence"):
+                found = await asyncio.to_thread(self._quiet_gc.collect)
+        finally:
+            self._quiet_gc.running = False
+        self.logger.debug(
+            "Collected garbage in a silence: %d unreachable objects, %.0f ms",
+            found,
+            (time.monotonic() - started) * 1000,
+        )
+
     def _save_snapshot_soon(self) -> None:
         """Copy the database for the next recording while nothing plays (a debug aid)."""
         if self._snapshots is None or not self.config.get_value(CONF_RECORD_INPUT):
@@ -721,6 +748,14 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             if session_id not in self._record_only:
                 with self._loopwatch.timed("chunk"):  # level, gap detection, buffering
                     engine.feed(pcm_chunk)
+                if engine.passage is not None:
+                    self._gc_done_in_gap.discard(session_id)
+                elif (
+                    engine.gap.silence_seconds >= QUIET_GC_SILENCE_SECONDS
+                    and session_id not in self._gc_done_in_gap
+                ):
+                    self._gc_done_in_gap.add(session_id)  # once per silence, not every chunk
+                    self._collect_garbage_soon()
             if self._recorders or self._split_waiting:
                 await self._maybe_split_recording(session_id, engine)
         if self._recorders:
@@ -744,8 +779,10 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         self._split_waiting.discard(session_id)
         self._record_only.discard(session_id)
         self._formats.pop(session_id, None)
+        self._gc_done_in_gap.discard(session_id)
         if recorded:
             self._save_snapshot_soon()  # the session ended: copy now, not when the next starts
+        self._collect_garbage_soon()
         await super().cancel(session_id)
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
