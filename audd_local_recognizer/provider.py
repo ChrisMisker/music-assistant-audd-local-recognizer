@@ -78,7 +78,7 @@ FAST_START_SECONDS = 30.0
 MAX_SPEED_CORRECTION = 10
 CONF_RECORD_INPUT = "record_input_stream"
 CONF_RECORD_MINUTES = "record_input_max_minutes"
-MAX_RECORDING_MINUTES = 1440  # 24 h: two days of listening between two fetches (2026-11-21)
+MAX_RECORDING_MINUTES = 240  # 4 h: a few records (24 h until 2026-11-25; community-catalog#54)
 
 DEFAULT_SILENCE_DBFS = -45
 DEFAULT_RESUME_DBFS = -35
