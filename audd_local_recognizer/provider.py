@@ -98,6 +98,15 @@ def _whole_seconds(value: Any) -> int | None:
 
 # shown after a source in the list when the source itself does not allow analysis
 NOT_ALLOWED = " (analysis not allowed)"
+NOT_ALLOWED_REASON = (
+    "This source does not allow analysis: turn on 'Allow analysis of the audio input' in its own "
+    "settings."
+)
+
+
+def _allows_analysis(source: object) -> bool:
+    """Return False only when the source says it may not be analysed (older servers: True)."""
+    return getattr(source, "allow_audio_analysis", True) is not False
 
 
 class AudDLocalRecognizerProvider(AudioAnalysisProvider):
@@ -228,7 +237,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                     "recognized until you choose one. The source must allow it too: 'Allow "
                     "analysis of the audio input' in the source's own settings (e.g. the Sendspin "
                     "device or VBAN Receiver; on by default). A source marked "
-                    "'(analysis not allowed)' has it off and is not recognized until you turn it on."
+                    "'(analysis not allowed)' has it off: it cannot be chosen (and, if chosen "
+                    "earlier, is not recognized) until you turn it on."
                 ),
             ),
             ConfigEntry(
@@ -375,8 +385,10 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                     ConfigValueOption(
                         source_key(provider.instance_id, source.item_id),
                         title=f"{provider.name}: {source.name}"
-                        # MA never analyses such a source (its own setting): say so here
-                        + ("" if getattr(source, "allow_audio_analysis", True) else NOT_ALLOWED),
+                        + ("" if _allows_analysis(source) else NOT_ALLOWED),
+                        # MA never analyses such a source (its own setting): greyed out, not chosen
+                        disabled=not _allows_analysis(source),
+                        disabled_reason=None if _allows_analysis(source) else NOT_ALLOWED_REASON,
                     )
                     for source in await get_sources()
                 )
