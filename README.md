@@ -166,7 +166,10 @@ settings in Music Assistant.
   12 seconds of mono audio per request, together with your API token. A track may need several
   requests (at most 20, see [How many requests to expect](#about-audd-a-paid-service-with-a-free-trial)),
   so several samples of the same track can be sent. Nothing else is sent.
-- **Known tracks are recognized locally**; no audio of them is sent anywhere.
+- **Known tracks are recognized locally**, without AudD. One exception: a known track whose
+  length is not stored yet (for example one learned before version 0.9) gets **one** AudD request,
+  once, to learn its length (one ~12-second sample, the first time you play it again). After
+  that, no audio of it is sent anywhere.
 - The **local fingerprints are computed by this provider** (Panako fingerprints via
   [audalign](https://pypi.org/project/audalign/)) and are stored only on your Music Assistant
   server, in `audd_local_recognizer/fingerprints.sqlite3` in its data folder. They are never
