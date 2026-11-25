@@ -96,6 +96,10 @@ def _whole_seconds(value: Any) -> int | None:
     return round(value)
 
 
+# shown after a source in the list when the source itself does not allow analysis
+NOT_ALLOWED = " (analysis not allowed)"
+
+
 class AudDLocalRecognizerProvider(AudioAnalysisProvider):
     """Recognize live AudioSources locally first, with AudD as discovery fallback."""
 
@@ -223,7 +227,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                     "Choose the live sources to recognize, e.g. your turntable. Nothing is "
                     "recognized until you choose one. The source must allow it too: 'Allow "
                     "analysis of the audio input' in the source's own settings (e.g. the Sendspin "
-                    "device or VBAN Receiver; on by default)."
+                    "device or VBAN Receiver; on by default). A source marked "
+                    "'(analysis not allowed)' has it off and is not recognized until you turn it on."
                 ),
             ),
             ConfigEntry(
@@ -369,7 +374,9 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 options.extend(
                     ConfigValueOption(
                         source_key(provider.instance_id, source.item_id),
-                        title=f"{provider.name}: {source.name}",
+                        title=f"{provider.name}: {source.name}"
+                        # MA never analyses such a source (its own setting): say so here
+                        + ("" if getattr(source, "allow_audio_analysis", True) else NOT_ALLOWED),
                     )
                     for source in await get_sources()
                 )

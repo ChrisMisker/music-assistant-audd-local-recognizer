@@ -14,7 +14,7 @@
     },
     "audio_sources": {
       "label": "Te herkennen audiobronnen",
-      "description": "Kies de live bronnen om te herkennen, bijvoorbeeld je platenspeler. Er wordt niets herkend totdat je er een kiest. De bron moet het ook toestaan: 'Allow analysis of the audio input' in de instellingen van de bron zelf (bijvoorbeeld het Sendspin-apparaat of VBAN Receiver; standaard aan)."
+      "description": "Kies de live bronnen om te herkennen, bijvoorbeeld je platenspeler. Er wordt niets herkend totdat je er een kiest. De bron moet het ook toestaan: 'Allow analysis of the audio input' in de instellingen van de bron zelf (bijvoorbeeld het Sendspin-apparaat of VBAN Receiver; standaard aan). Een bron gemarkeerd met '(analysis not allowed)' heeft het uit en wordt pas herkend als je het aanzet."
     },
     "silence_threshold_dbfs": {
       "label": "Stiltedrempel (dBFS)",

@@ -14,7 +14,7 @@
     },
     "audio_sources": {
       "label": "Audio sources to recognize",
-      "description": "Choose the live sources to recognize, e.g. your turntable. Nothing is recognized until you choose one. The source must allow it too: 'Allow analysis of the audio input' in the source's own settings (e.g. the Sendspin device or VBAN Receiver; on by default)."
+      "description": "Choose the live sources to recognize, e.g. your turntable. Nothing is recognized until you choose one. The source must allow it too: 'Allow analysis of the audio input' in the source's own settings (e.g. the Sendspin device or VBAN Receiver; on by default). A source marked '(analysis not allowed)' has it off and is not recognized until you turn it on."
     },
     "silence_threshold_dbfs": {
       "label": "Silence threshold (dBFS)",
