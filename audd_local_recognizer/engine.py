@@ -99,8 +99,10 @@ DROPOUT_DBFS = SILENCE_FLOOR_DBFS + 1
 DROPOUT_MAX_SECONDS = 10.0
 # ...or this long inside an identified passage: when the source reconnects (Wi-Fi, 2026-11-20/21)
 # MA delivers 10-26 s of zeros and the same song goes on; at 10 s every reconnect split the track
-# into a new passage (Spaceman in 4 pieces). A source that really stopped closes 20 s later.
-RECONNECT_MAX_SECONDS = 30.0
+# into a new passage (Spaceman in 4 pieces). 30 s was still too short (2026-11-25, user's test):
+# Wi-Fi off ~25 s gave ~32 s of zeros (reconnecting adds 5-10 s), so the passage closed and the
+# rest of the song went unrecognized. A source that really stopped closes 50 s later.
+RECONNECT_MAX_SECONDS = 60.0
 # Published instead of a track when the shown track has clearly ended: a new passage plays and its
 # first lookup did not identify it (user's wish 2026-11-19; during a gap the last track stays).
 # The provider reports the source's own placeholder metadata for it.
