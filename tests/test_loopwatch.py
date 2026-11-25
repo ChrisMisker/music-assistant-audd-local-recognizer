@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -115,6 +116,31 @@ async def test_stall_stacks_name_the_code_that_held_the_loop(
     assert stacks
     assert all("_hold_the_loop" in stack for stack in stacks)
     assert len(stacks) <= loopwatch.STACK_SAMPLES
+
+
+def _spin_in_a_thread(stop: threading.Event) -> None:
+    while not stop.is_set():
+        sum(range(1000))
+
+
+async def test_stall_stacks_name_the_other_busy_threads(caplog: pytest.LogCaptureFixture) -> None:
+    """A loop waiting for the GIL: the thread holding it shows up in 'other threads'."""
+    caplog.set_level(logging.INFO)
+    stop = threading.Event()
+    worker = threading.Thread(target=_spin_in_a_thread, args=(stop,), name="spinner")
+    worker.start()
+    watch = LoopWatch(logging.getLogger("test.loopwatch"))
+    watch.start(sample_stacks=True)
+    await asyncio.sleep(0.05)
+    _hold_the_loop(0.2)
+    await asyncio.sleep(0.05)
+    watch.stop()
+    stop.set()
+    worker.join()
+    lines = [r.getMessage() for r in caplog.records if "other threads at" in r.getMessage()]
+    assert len(lines) == 1
+    assert "[spinner]" in lines[0]
+    assert "_spin_in_a_thread" in lines[0]
 
 
 async def test_no_stall_stacks_without_asking(caplog: pytest.LogCaptureFixture) -> None:

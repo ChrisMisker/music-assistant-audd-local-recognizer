@@ -37,6 +37,11 @@ STACK_AFTER_SECONDS = 0.05
 STACK_EVERY_SECONDS = 0.03
 STACK_SAMPLES = 4
 STACK_FRAMES = 14
+# With the first stack sample of a stall, the other busy threads too (innermost frames only): a
+# loop that waits at a trivial point is waiting for the GIL, and the thread holding it is among them
+THREAD_FRAMES = 6
+# innermost functions of a thread that is only waiting (a pool worker between jobs, a timer)
+IDLE_FUNCTIONS = frozenset({"_worker", "wait", "_wait_for_tstate_lock", "get", "select", "_sample"})
 
 
 def _format_stack(frame: Any) -> str:
@@ -48,6 +53,18 @@ def _format_stack(frame: Any) -> str:
         name = "/".join(name.split("/")[-3:])
         parts.append(f"{name}:{entry.lineno} {entry.name}")
     return " > ".join(parts)
+
+
+def _busy_threads(skip: set[int | None]) -> str:
+    """Name the threads that are doing something, each with its innermost frames."""
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    parts = []
+    for ident, frame in sys._current_frames().items():  # noqa: SLF001 - diagnostics
+        if ident in skip or frame.f_code.co_name in IDLE_FUNCTIONS:
+            continue
+        stack = " > ".join(_format_stack(frame).split(" > ")[-THREAD_FRAMES:])
+        parts.append(f"[{names.get(ident, ident)}] {stack}")
+    return " | ".join(parts) or "none busy"
 
 
 class LoopWatch:
@@ -70,6 +87,7 @@ class LoopWatch:
         self._tick_at = 0.0
         self._loop_thread: int | None = None
         self._samples: list[tuple[int, float, str]] = []
+        self._thread_samples: list[tuple[int, float, str]] = []
         self._sampler: threading.Thread | None = None
         self._sampler_stop = threading.Event()
 
@@ -194,6 +212,9 @@ class LoopWatch:
             if frame is not None:
                 self._samples.append((tick, late, _format_stack(frame)))
             del frame
+            if taken == 0:
+                skip: set[int | None] = {self._loop_thread, threading.get_ident()}
+                self._thread_samples.append((tick, late, _busy_threads(skip)))
             taken += 1
             next_at = late + STACK_EVERY_SECONDS
 
@@ -209,6 +230,7 @@ class LoopWatch:
             lag = loop.time() - before - INTERVAL_SECONDS
             now = time.monotonic()
             samples, self._samples = self._samples, []
+            thread_samples, self._thread_samples = self._thread_samples, []
             if lag >= STALL_SECONDS:
                 self._stalls += 1
                 self._worst = max(self._worst, lag)
@@ -220,6 +242,11 @@ class LoopWatch:
                 for sampled_tick, late, stack in samples:
                     if sampled_tick == tick:
                         self._logger.info("  stall stack at +%d ms: %s", round(late * 1000), stack)
+                for sampled_tick, late, threads in thread_samples:
+                    if sampled_tick == tick:
+                        self._logger.info(
+                            "  other threads at +%d ms: %s", round(late * 1000), threads
+                        )
             if now - last_summary >= SUMMARY_SECONDS:
                 last_summary = now
                 self._summary("so far")
