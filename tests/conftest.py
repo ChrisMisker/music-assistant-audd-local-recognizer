@@ -45,7 +45,14 @@ PLAYING = "playing"  # an audd_script entry: answer that call with what is playi
 # The harness runs offloaded work inline but marks it, and these engine functions refuse to run
 # unmarked. Add every new window-sized helper the engine calls to WINDOW_SIZED_WORK.
 OFFLOADED: contextvars.ContextVar[bool] = contextvars.ContextVar("offloaded", default=False)
-WINDOW_SIZED_WORK = ("pcm_to_wav", "stream_holes", "sample_stats")
+WINDOW_SIZED_WORK = (
+    "pcm_to_wav",
+    "stream_holes",
+    "sample_stats",
+    "evidence_add",
+    "evidence_best",
+    "evidence_position",
+)
 
 
 @pytest.fixture(autouse=True)

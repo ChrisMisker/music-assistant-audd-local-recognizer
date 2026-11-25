@@ -787,17 +787,17 @@ async def test_audd_is_postponed_only_for_a_promising_candidate(make_harness: An
     h = make_harness()
     h.engine.feed(music(1, 0))
     passage = _due_passage(h)
-    assert not h.engine._postpone_audd(passage)  # option off
+    assert not await h.engine._postpone_audd(passage)  # option off
     h.engine.postpone_audd = True
-    assert not h.engine._postpone_audd(passage)  # no candidate yet
+    assert not await h.engine._postpone_audd(passage)  # no candidate yet
     passage.confirmer.consider(_candidate(7, 1, 1.0))  # an accidental 1-vote candidate
-    assert not h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)
     passage.confirmer.consider(_candidate(7, 2, 1.0))  # 2 votes: accidental ones reach that
-    assert not h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)
     passage.confirmer.consider(_candidate(7, 3, 1.0))  # a promising candidate
-    assert h.engine._postpone_audd(passage)
-    assert h.engine._postpone_audd(passage)
-    assert not h.engine._postpone_audd(passage)  # at most MAX_AUDD_POSTPONES per passage
+    assert await h.engine._postpone_audd(passage)
+    assert await h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)  # at most MAX_AUDD_POSTPONES per passage
     assert passage.audd_postponed == eng.MAX_AUDD_POSTPONES
 
 
@@ -808,11 +808,11 @@ async def test_audd_waits_for_the_ordinary_votes_of_a_cluster(make_harness: Any)
     h.engine.feed(music(1, 0))
     passage = _due_passage(h)
     passage.evidence = _evidence_of([_dense_only(n) for n in range(5)], dense=True)
-    assert not h.engine._postpone_audd(passage)  # 5 votes: not enough
+    assert not await h.engine._postpone_audd(passage)  # 5 votes: not enough
     passage.evidence = _evidence_of([_dense_only(n) for n in range(6)], dense=True)
-    assert h.engine._postpone_audd(passage)
-    assert h.engine._postpone_audd(passage)
-    assert not h.engine._postpone_audd(passage)
+    assert await h.engine._postpone_audd(passage)
+    assert await h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)
 
 
 async def test_audd_is_not_postponed_when_it_is_not_due(make_harness: Any) -> None:
@@ -822,7 +822,7 @@ async def test_audd_is_not_postponed_when_it_is_not_due(make_harness: Any) -> No
     passage = _due_passage(h)
     passage.seconds = 18.0  # before the first AudD attempt
     passage.confirmer.consider(_candidate(7, 3, 1.0))
-    assert not h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)
     assert passage.audd_postponed == 0
 
 
@@ -832,7 +832,7 @@ async def test_without_token_nothing_is_postponed(make_harness: Any) -> None:
     h.engine.feed(music(1, 0))
     passage = _due_passage(h)
     passage.confirmer.consider(_candidate(7, 3, 1.0))
-    assert not h.engine._postpone_audd(passage)
+    assert not await h.engine._postpone_audd(passage)
 
 
 # ---------------------------------------------------------------- gapless guard

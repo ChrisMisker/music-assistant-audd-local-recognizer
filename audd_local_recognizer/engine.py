@@ -26,6 +26,7 @@ Invariants
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -418,6 +419,55 @@ class SongPosition:
         )
 
 
+# Evidence work the engine runs in a worker thread (named functions: the loop watcher times them
+# by name, and tests/conftest.py checks that they never run on the event loop).
+def evidence_add(  # noqa: PLR0913, PLR0917 - positional for run_blocking
+    evidence: TimelineEvidence,
+    query: Fingerprints,
+    rows: list[MatchRow],
+    start: float,
+    new_lookup: bool,  # noqa: FBT001 - positional for run_blocking
+    dense: bool,  # noqa: FBT001
+) -> None:
+    """Add one lookup to the evidence (see TimelineEvidence.add)."""
+    evidence.add(query, rows, start, new_lookup=new_lookup, dense=dense)
+
+
+def evidence_best(
+    evidence: TimelineEvidence, track_id: int | None, min_ordinary: int, large: int | None
+) -> Coherence | None:
+    """Return the strongest cluster (see TimelineEvidence.best)."""
+    return evidence.best(track_id, min_ordinary, large)
+
+
+def evidence_position(
+    evidence: TimelineEvidence,
+    track_id: int,
+    song_starts: dict[str, Any],
+    near: float | None,
+    tolerance: float,
+) -> tuple[SongPosition | None, int]:
+    """Return the strongest song start and, with near, the votes of the one near it."""
+    position = evidence.song_start(track_id, song_starts)
+    support = evidence.votes_near(track_id, song_starts, near, tolerance) if near is not None else 0
+    return position, support
+
+
+def _strongest_center(
+    counted: dict[int, tuple[int, int, int, int, int]], min_ordinary: int, large: int | None
+) -> int | None:
+    """Return the first center (in order) of the strongest cluster that passes the filter."""
+    best: int | None = None
+    best_rank = (-1, -1)
+    for center in sorted(counted):
+        votes, lookups, _latest, ordinary, _counted_at = counted[center]
+        if ordinary < min_ordinary and (large is None or votes < large):
+            continue
+        if (votes, lookups) > best_rank:
+            best, best_rank = center, (votes, lookups)
+    return best
+
+
 class TimelineEvidence:
     """
     Add the shared hashes of every lookup of a passage up by (track, reference passage, shift).
@@ -436,17 +486,29 @@ class TimelineEvidence:
         self.frame_seconds = frame_seconds
         # optional timing of this pure-Python work, which runs on the event loop
         self._timed = timed or (lambda _label: nullcontext())
+        # the engine runs this work in a worker thread (it took up to ~90 ms on the HA Blue on
+        # the event loop, 2026-11-25); the lock keeps two calls from interleaving
+        self._lock = threading.Lock()
         self.lookups = 0
-        # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there
-        self._bins: dict[tuple[int, str], dict[int, dict[str, set[int]]]] = {}
+        # (track_id, reference passage) -> shift bin -> hash -> lookups that saw it there, as a
+        # bit mask (bit n = lookup n): plain ints, not millions of small sets that Python's
+        # garbage collector must walk (full collections of ~0.5-0.9 s on the HA Blue, 2026-11-25)
+        self._bins: dict[tuple[int, str], dict[int, dict[str, int]]] = {}
         # hashes only a dense (fast start) window holds, not an ordinary one
         self._dense_only: set[str] = set()
+        # hashes of ordinary (not dense) lookups: one of them turning dense-only later would
+        # change clusters counted before (never with real fingerprints: a safety net)
+        self._ordinary_seen: set[str] = set()
         # Counted clusters per play and center: (votes, lookups, latest votes, ordinary votes,
         # lookup counted at), and the bins changed since. best() runs on the event loop after
         # every lookup; recounting every cluster each time grew to ~1 s on the HA Blue for a long
         # unknown passage (2026-11-24). A changed bin only changes the clusters around it.
         self._counted: dict[tuple[int, str], dict[int, tuple[int, int, int, int, int]]] = {}
         self._changed: dict[tuple[int, str], set[int]] = {}
+        # per play and filter (min_ordinary, large): the center of its strongest cluster (None:
+        # none passes), valid until the play is recounted; and the plays in a stable order
+        self._play_best: dict[tuple[int, str], dict[tuple[int, int | None], int | None]] = {}
+        self._order: list[tuple[int, str]] | None = None
 
     def add(
         self,
@@ -458,7 +520,7 @@ class TimelineEvidence:
         dense: bool = False,
     ) -> None:
         """Add one lookup (or, with new_lookup=False, another phase of the same lookup)."""
-        with self._timed("evidence add"):
+        with self._lock, self._timed("evidence add"):
             self._add(query, rows, query_start_seconds, new_lookup=new_lookup, dense=dense)
 
     def _add(
@@ -478,10 +540,18 @@ class TimelineEvidence:
         if new_lookup or self.lookups == 0:
             self.lookups += 1
         if dense:
-            before = len(self._dense_only)
-            self._dense_only.update(query.keys() - density_subset(query, DENSITY_DIVISOR).keys())
-            if len(self._dense_only) != before:
-                self._counted.clear()  # ordinary votes of every play may have changed
+            new_dense = (
+                query.keys() - density_subset(query, DENSITY_DIVISOR).keys() - self._dense_only
+            )
+            self._dense_only.update(new_dense)
+            if not new_dense.isdisjoint(self._ordinary_seen):
+                self._forget_counts()  # ordinary votes counted before may have changed
+            # otherwise a new dense-only hash occurs only in this lookup's rows, whose bins are
+            # marked changed below: no need to recount every play (it was, every fast-start
+            # lookup, the biggest cost of best() on the event loop, 2026-11-25)
+        else:
+            self._ordinary_seen.update(query.keys())
+        bit = 1 << self.lookups
         for row in rows:
             for query_position in query.get(row.fingerprint_hash, ()):
                 shift = (
@@ -489,17 +559,25 @@ class TimelineEvidence:
                     + (row.position - query_position) * self.frame_seconds
                     - query_start_seconds
                 )
-                bins = self._bins.setdefault((row.track_id, row.passage_id), {})
+                key = (row.track_id, row.passage_id)
+                bins = self._bins.get(key)
+                if bins is None:
+                    bins = self._bins[key] = {}
+                    self._order = None
                 shift_bin = round(shift / COHERENCE_BIN_SECONDS)
-                self._changed.setdefault((row.track_id, row.passage_id), set()).add(shift_bin)
+                self._changed.setdefault(key, set()).add(shift_bin)
                 seen = bins.setdefault(shift_bin, {})
-                seen.setdefault(row.fingerprint_hash, set()).add(self.lookups)
+                seen[row.fingerprint_hash] = seen.get(row.fingerprint_hash, 0) | bit
+
+    def _forget_counts(self) -> None:
+        self._counted.clear()
+        self._play_best.clear()
 
     def best(
         self, track_id: int | None = None, min_ordinary: int = 0, large: int | None = None
     ) -> Coherence | None:
         """Return the strongest cluster (of one track if given), or None (see _best)."""
-        with self._timed("evidence best"):
+        with self._lock, self._timed("evidence best"):
             return self._best(track_id, min_ordinary, large)
 
     def _best(
@@ -511,29 +589,38 @@ class TimelineEvidence:
         With min_ordinary, a cluster needs that many ordinary votes, unless it has at least
         large votes in total.
         """
-        best: Coherence | None = None
-        for (track, passage_id), bins in sorted(self._bins.items()):
-            if track_id is not None and track != track_id:
+        if self._order is None:
+            self._order = sorted(self._bins)
+        found: tuple[tuple[int, str], int, tuple[int, int, int, int, int]] | None = None
+        for key in self._order:
+            if track_id is not None and key[0] != track_id:
                 continue
-            counted = self._count(track, passage_id, bins)
-            for center in sorted(counted):
-                votes, lookups, latest, ordinary, counted_at = counted[center]
-                if ordinary < min_ordinary and (large is None or votes < large):
-                    continue
-                if best is None or (votes, lookups) > (best.votes, best.lookups):
-                    best = Coherence(
-                        track,
-                        passage_id,
-                        votes,
-                        lookups,
-                        latest if counted_at == self.lookups else 0,
-                        center * COHERENCE_BIN_SECONDS,
-                        ordinary,
-                    )
-        return best
+            counted = self._count(key[0], key[1], self._bins[key])
+            choices = self._play_best.setdefault(key, {})
+            if (min_ordinary, large) not in choices:
+                choices[min_ordinary, large] = _strongest_center(counted, min_ordinary, large)
+            center = choices[min_ordinary, large]
+            if center is None:
+                continue
+            entry = counted[center]
+            # the first strongest in (play, center) order wins, as when all were compared at once
+            if found is None or entry[:2] > found[2][:2]:
+                found = (key, center, entry)
+        if found is None:
+            return None
+        (track, passage_id), center, (votes, lookups, latest, ordinary, counted_at) = found
+        return Coherence(
+            track,
+            passage_id,
+            votes,
+            lookups,
+            latest if counted_at == self.lookups else 0,
+            center * COHERENCE_BIN_SECONDS,
+            ordinary,
+        )
 
     def _count(
-        self, track: int, passage_id: str, bins: dict[int, dict[str, set[int]]]
+        self, track: int, passage_id: str, bins: dict[int, dict[str, int]]
     ) -> dict[int, tuple[int, int, int, int, int]]:
         """Return the clusters of one play per center, recounting only around changed bins."""
         key = (track, passage_id)
@@ -549,16 +636,26 @@ class TimelineEvidence:
                 if center in bins
             }
         self._changed.pop(key, None)
+        if centers:
+            self._play_best.pop(key, None)
+        latest_bit = 1 << self.lookups
+        dense_only = self._dense_only
         for center in centers:
-            hashes: dict[str, set[int]] = {}
+            hashes: dict[str, int] = {}
             for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
                 for fp_hash, seen in bins.get(index, {}).items():
-                    hashes.setdefault(fp_hash, set()).update(seen)
+                    hashes[fp_hash] = hashes.get(fp_hash, 0) | seen
+            union = 0
+            latest = 0
+            for seen in hashes.values():
+                union |= seen
+                if seen & latest_bit:
+                    latest += 1
             counted[center] = (
                 len(hashes),
-                len(set().union(*hashes.values())),
-                sum(1 for seen in hashes.values() if self.lookups in seen),
-                sum(1 for fp_hash in hashes if fp_hash not in self._dense_only),
+                union.bit_count(),
+                latest,
+                sum(1 for fp_hash in hashes if fp_hash not in dense_only),
                 self.lookups,
             )
         self._counted[key] = counted
@@ -568,7 +665,7 @@ class TimelineEvidence:
         self, track_id: int, song_starts: dict[str, Any]
     ) -> list[tuple[int, int, int]]:
         """Return (votes, lookups, song start bin) per song start of a track (positioned plays)."""
-        merged: dict[int, dict[tuple[str, str], set[int]]] = {}
+        merged: dict[int, dict[tuple[str, str], int]] = {}
         for (track, passage_id), bins in self._bins.items():
             start = song_starts.get(passage_id)
             if track != track_id or isinstance(start, bool) or not isinstance(start, int | float):
@@ -577,19 +674,22 @@ class TimelineEvidence:
             for shift_bin, hashes in bins.items():
                 target = merged.setdefault(offset - shift_bin, {})
                 for fp_hash, seen in hashes.items():
-                    target.setdefault((passage_id, fp_hash), set()).update(seen)
+                    target[passage_id, fp_hash] = target.get((passage_id, fp_hash), 0) | seen
         clusters: list[tuple[int, int, int]] = []
         for center in sorted(merged):
-            votes: dict[tuple[str, str], set[int]] = {}
+            votes: dict[tuple[str, str], int] = {}
             for index in range(center - COHERENCE_BINS, center + COHERENCE_BINS + 1):
                 for key, seen in merged.get(index, {}).items():
-                    votes.setdefault(key, set()).update(seen)
-            clusters.append((len(votes), len(set().union(*votes.values())), center))
+                    votes[key] = votes.get(key, 0) | seen
+            union = 0
+            for seen in votes.values():
+                union |= seen
+            clusters.append((len(votes), union.bit_count(), center))
         return clusters
 
     def song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
         """Return the strongest song start of a track (see _song_start)."""
-        with self._timed("evidence position"):
+        with self._lock, self._timed("evidence position"):
             return self._song_start(track_id, song_starts)
 
     def _song_start(self, track_id: int, song_starts: dict[str, Any]) -> SongPosition | None:
@@ -618,7 +718,7 @@ class TimelineEvidence:
         self, track_id: int, song_starts: dict[str, Any], start_seconds: float, tolerance: float
     ) -> int:
         """Return the votes of the strongest song start within tolerance of start_seconds."""
-        with self._timed("evidence position"):
+        with self._lock, self._timed("evidence position"):
             return self._votes_near(track_id, song_starts, start_seconds, tolerance)
 
     def _votes_near(
@@ -635,10 +735,17 @@ class TimelineEvidence:
 
     def clear(self) -> None:
         """Drop all evidence (after an identification)."""
+        with self._lock:
+            self._clear()
+
+    def _clear(self) -> None:
         self._bins.clear()
         self._dense_only.clear()
+        self._ordinary_seen.clear()
         self._counted.clear()
         self._changed.clear()
+        self._play_best.clear()
+        self._order = None
 
 
 @dataclass(frozen=True)
@@ -1087,7 +1194,9 @@ class RecognitionEngine:
 
     # ---------------------------------------------------------------- recognition
 
-    async def _recognize(self, passage: Passage, pcm: bytes, window_end: float) -> None:
+    async def _recognize(  # noqa: C901 - one recognition step, guarded after each await
+        self, passage: Passage, pcm: bytes, window_end: float
+    ) -> None:
         try:
             query = await self._fingerprint(pcm, self._divisor(window_end))
             if not self._is_current(passage):
@@ -1099,14 +1208,24 @@ class RecognitionEngine:
             if not self._is_current(passage):
                 return
             dense = self._divisor(window_end) < DENSITY_DIVISOR
-            passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS, dense=dense)
+            await self._run_blocking(
+                evidence_add,
+                passage.evidence,
+                query,
+                local.rows,
+                window_end - SAMPLE_SECONDS,
+                True,  # noqa: FBT003 - a new lookup
+                dense,
+            )
+            if not self._is_current(passage):
+                return
             local = await self._other_phases(passage, pcm, window_end, local)
             if local is None:
                 return
             if await self._judge_local(passage, local):
                 await self._store_early_windows(passage)
                 return
-            if not self._postpone_audd(passage):
+            if not await self._postpone_audd(passage):
                 await self._recognize_with_audd(passage, pcm, query, window_end)
             if self._is_current(passage) and not passage.identified:
                 self._clear_stale_track(passage)
@@ -1140,7 +1259,17 @@ class RecognitionEngine:
                 return None
             start = window_end - SAMPLE_SECONDS + skip / self.fmt.sample_rate
             dense = self._divisor(window_end) < DENSITY_DIVISOR
-            passage.evidence.add(query, found.rows, start, new_lookup=False, dense=dense)
+            await self._run_blocking(
+                evidence_add,
+                passage.evidence,
+                query,
+                found.rows,
+                start,
+                False,  # noqa: FBT003 - another phase of the same lookup
+                dense,
+            )
+            if not self._is_current(passage):
+                return None
             if found.best is not None and (
                 best.best is None or found.best.best_votes > best.best.best_votes
             ):
@@ -1200,7 +1329,9 @@ class RecognitionEngine:
             self.logger.debug("LOCAL MISS: no candidate (passage %s)", passage.short_id)
         else:
             decision = passage.confirmer.consider(candidate)
-            coherence = passage.evidence.best(candidate.track_id)
+            coherence = await self._run_blocking(
+                evidence_best, passage.evidence, candidate.track_id, 0, None
+            )
             if (
                 decision is Decision.ACCEPT_CONFIRMED
                 and CONFIRM_COHERENT_VOTES > 0  # 0 switches the rule off (experiments)
@@ -1384,8 +1515,12 @@ class RecognitionEngine:
 
     async def _judge_timeline(self, passage: Passage) -> bool:
         """Accept the strongest time-consistent cluster once it has enough evidence."""
-        coherence = passage.evidence.best(
-            min_ordinary=COHERENT_ORDINARY_VOTES, large=COHERENT_LARGE_VOTES
+        coherence = await self._run_blocking(
+            evidence_best,
+            passage.evidence,
+            None,
+            COHERENT_ORDINARY_VOTES,
+            COHERENT_LARGE_VOTES,
         )
         if coherence is None or coherence.votes < coherent_votes_required(passage.evidence.lookups):
             return False
@@ -1430,7 +1565,7 @@ class RecognitionEngine:
             return FAST_START_DENSITY_DIVISOR
         return DENSITY_DIVISOR
 
-    def _postpone_audd(self, passage: Passage) -> bool:
+    async def _postpone_audd(self, passage: Passage) -> bool:
         """Return True (and log) when AudD is due but a local candidate looks promising."""
         if not self.postpone_audd or self._audd is None:
             return False
@@ -1438,7 +1573,7 @@ class RecognitionEngine:
             return False
         latest = passage.confirmer.latest
         track_id = latest[0] if latest and latest[1] >= POSTPONE_MIN_VOTES else None
-        coherence = passage.evidence.best(track_id)
+        coherence = await self._run_blocking(evidence_best, passage.evidence, track_id, 0, None)
         if track_id is None:
             # or a cluster that would be accepted but for its ordinary votes (a genuine one mostly
             # gets them a lookup later: regression 2026-11-22, 5 of 170 local hits went to AudD)
@@ -1887,7 +2022,7 @@ class RecognitionEngine:
         except Exception:
             self.logger.exception("Could not learn window (passage %s)", passage.short_id)
 
-    async def _decide_position(
+    async def _decide_position(  # noqa: C901 - guarded after each await
         self, passage: Passage, query: Fingerprints, window_end: float
     ) -> None:
         """Add a learned window to the position evidence; adopt the song start once decisive."""
@@ -1895,17 +2030,30 @@ class RecognitionEngine:
         local = await self._run_blocking(self._db.lookup, query, passage.id)
         if not self._is_current(passage) or passage.track_id is None:
             return
-        passage.evidence.add(query, local.rows, window_end - SAMPLE_SECONDS)
+        await self._run_blocking(
+            evidence_add,
+            passage.evidence,
+            query,
+            local.rows,
+            window_end - SAMPLE_SECONDS,
+            True,  # noqa: FBT003 - a new lookup
+            False,  # noqa: FBT003 - not dense
+        )
+        if not self._is_current(passage) or passage.track_id is None:
+            return
         metadata = passage.metadata or {}
         starts = metadata.get(SONG_STARTS) or {}
-        position = passage.evidence.song_start(passage.track_id, starts)
+        position, support = await self._run_blocking(
+            evidence_position,
+            passage.evidence,
+            passage.track_id,
+            starts,
+            passage.continuation_start,
+            CONTINUATION_TOLERANCE_SECONDS,
+        )
+        if not self._is_current(passage) or passage.track_id is None:
+            return
         if passage.continuation_start is not None:
-            support = passage.evidence.votes_near(
-                passage.track_id,
-                starts,
-                passage.continuation_start,
-                CONTINUATION_TOLERANCE_SECONDS,
-            )
             if support >= CONTINUATION_CONFIRM_VOTES:
                 position = SongPosition(passage.continuation_start, support, 0, 0)
                 self.logger.info(
