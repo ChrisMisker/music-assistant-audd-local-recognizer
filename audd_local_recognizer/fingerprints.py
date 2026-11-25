@@ -305,23 +305,104 @@ def warm_up() -> None:
     change_speed(np.frombuffer(noise, dtype="<i2"), -1.0)
 
 
-def panako_fingerprint(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
-    """Return the full Audalign Panako hashes for one PCM window (CPU heavy: offload it)."""
-    FingerprintConfig, fingerprinter = _audalign()  # noqa: N806 - a class
-
-    samples = resample_s16(pcm_to_mono_s16(pcm, fmt), fmt.sample_rate, FINGERPRINT_SAMPLE_RATE)
+def _panako_config() -> Any:
+    FingerprintConfig, _fingerprinter = _audalign()  # noqa: N806 - a class
     config = FingerprintConfig()
     config.sample_rate = FINGERPRINT_SAMPLE_RATE
     if hasattr(config, "set_hash_style"):
         config.set_hash_style("panako")
     else:
         config.hash_style = "panako"
+    return config
+
+
+def _resampled(pcm: bytes, fmt: PcmFormat) -> np.ndarray:
+    return resample_s16(pcm_to_mono_s16(pcm, fmt), fmt.sample_rate, FINGERPRINT_SAMPLE_RATE)
+
+
+def audalign_panako(pcm: bytes, fmt: PcmFormat) -> Fingerprints:
+    """Return audalign's own full Panako hashes for one window (the reference for tests)."""
+    _config_class, fingerprinter = _audalign()
     # log10 of an all-zero spectrum in a very quiet window: harmless, keep it out of the MA log
     with np.errstate(divide="ignore", invalid="ignore"):
-        hashes = fingerprinter.fingerprint(samples, config)
+        hashes = fingerprinter.fingerprint(_resampled(pcm, fmt), _panako_config())
     if not isinstance(hashes, dict):
         msg = "Audalign returned an unexpected fingerprint result"
         raise TypeError(msg)
+    return hashes
+
+
+def panako_fingerprint(pcm: bytes, fmt: PcmFormat, divisor: int = 1) -> Fingerprints:
+    """
+    Return the Panako hashes of one PCM window, only the 1/divisor subset (CPU heavy: offload).
+
+    Exactly audalign's hashes (its spectrogram and peak search, the same sha1 recipe), computed
+    with fewer Python objects: audalign builds a tuple per peak and a list per hash, ~4,000 GC-
+    tracked objects per window, 94 % of what made Python collect while we recognize (replay,
+    2026-11-25); its full collections stall MA's event loop for ~0.3 s on the HA Blue. Here peaks
+    stay in numpy until they become plain ints, and only kept hashes get a list.
+    """
+    _config_class, fingerprinter = _audalign()
+    config = _panako_config()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        spectrum = fingerprinter.fingerprint(_resampled(pcm, fmt), config, retspec=True)
+    frequencies, times = _peaks(fingerprinter, spectrum, config)
+    return _panako_hashes(frequencies, times, config, divisor)
+
+
+def _peaks(fingerprinter: Any, spectrum: Any, config: Any) -> tuple[list[int], list[int]]:
+    """Return audalign's spectrogram peaks (frequency, time), in its order, as plain ints."""
+    neighborhood = fingerprinter.iterate_structure(
+        fingerprinter.generate_binary_structure(2, 1), config.peak_neighborhood_size
+    )
+    local_max = fingerprinter.maximum_filter(spectrum, footprint=neighborhood) == spectrum
+    eroded_background = fingerprinter.binary_erosion(
+        spectrum == 0, structure=neighborhood, border_value=1
+    )
+    detected = local_max ^ eroded_background
+    amplitudes = spectrum[detected].flatten()
+    rows, columns = np.where(detected)  # audalign: j (frequency), i (time)
+    keep = amplitudes > config.default_amp_min
+    frequencies, times = rows[keep], columns[keep]
+    if config.peak_sort:
+        order = np.argsort(times, kind="stable")  # sorted() by time is stable too
+        frequencies, times = frequencies[order], times[order]
+    return frequencies.tolist(), times.tolist()
+
+
+def _panako_hashes(
+    frequencies: list[int], times: list[int], config: Any, divisor: int
+) -> Fingerprints:
+    """Audalign's panako() hash loop, keeping only the 1/divisor subset (see density_subset)."""
+    hashes: Fingerprints = {}
+    count = len(frequencies)
+    fan = config.default_fan_value
+    low, high = config.min_hash_time_delta, config.max_hash_time_delta
+    reduction = config.FINGERPRINT_REDUCTION
+    for i in range(count):
+        freq1, t1 = frequencies[i], times[i]
+        for j in range(1, fan - 1):
+            if i + j >= count:
+                break
+            freq2, t2 = frequencies[i + j], times[i + j]
+            t_delta2 = t2 - t1
+            for k in range(j + 1, fan):
+                if i + k >= count:
+                    break
+                freq3, t3 = frequencies[i + k], times[i + k]
+                t_delta1 = t3 - t1
+                if not (low <= t_delta1 <= high and low <= t_delta2 <= high):
+                    continue
+                key = hashlib.sha1(  # noqa: S324 - audalign's hash recipe, not security
+                    f"{freq1 - freq2}|{freq2 - freq3}|{freq1 // 400}|{freq3 // 400}|"
+                    f"{t_delta2 / t_delta1:.8f}".encode()
+                ).hexdigest()[0:reduction]
+                if divisor > 1 and _stable_bucket(key) % divisor:
+                    continue
+                if key in hashes:
+                    hashes[key].append(t1)
+                else:
+                    hashes[key] = [t1]
     return hashes
 
 
@@ -332,7 +413,7 @@ def fingerprint_window(pcm: bytes, fmt: PcmFormat, divisor: int = DENSITY_DIVISO
     A divisor that divides DENSITY_DIVISOR (e.g. 4) keeps a superset of the normal subset, so
     denser and normal references and queries still match on the normal hashes.
     """
-    return density_subset(panako_fingerprint(pcm, fmt), divisor)
+    return panako_fingerprint(pcm, fmt, divisor)
 
 
 def _stable_bucket(value: str) -> int:

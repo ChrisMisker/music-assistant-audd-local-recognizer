@@ -136,6 +136,24 @@ def test_real_panako_on_synthetic_music() -> None:
     assert panako_fingerprint(pcm, SENDSPIN) == full
 
 
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_our_panako_is_exactly_audaligns(seed: int) -> None:
+    """Same hashes and positions as audalign's own code, full and as a density subset."""
+    rng = np.random.default_rng(seed)
+    rate = 48000
+    t = np.arange(rate * 12) / rate
+    tones = rng.uniform(100, 4000, 8)
+    signal = sum(np.sin(2 * np.pi * f * t) * (t % rng.uniform(0.3, 2.0) < 0.4) for f in tones)
+    signal = 0.05 * signal + rng.normal(0, 0.01, t.size)
+    fmt = PcmFormat(rate, 2, 4, "f32le")
+    pcm = np.repeat(signal.astype("<f4"), 2).tobytes()
+    reference = fingerprints.audalign_panako(pcm, fmt)
+    assert len(reference) > 100
+    assert panako_fingerprint(pcm, fmt) == reference
+    for divisor in (4, 16):
+        assert panako_fingerprint(pcm, fmt, divisor) == density_subset(reference, divisor)
+
+
 def _music(rate: int, seconds: float = 12) -> np.ndarray:
     rng = np.random.default_rng(7)
     t = np.arange(int(rate * seconds)) / rate
