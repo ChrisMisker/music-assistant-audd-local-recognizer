@@ -10,11 +10,11 @@
     },
     "all_audio_sources": {
       "label": "Alle live audiobronnen herkennen",
-      "description": "Geavanceerd, standaard uit: normaal kies je je bronnen (bijvoorbeeld je platenspeler) bij 'Te herkennen audiobronnen'. Zet alleen aan als elke live audiobron die analyse toestaat herkend moet worden."
+      "description": "Geavanceerd, standaard uit: normaal kies je je bronnen (bijvoorbeeld je platenspeler) bij 'Te herkennen audiobronnen'. Zet aan om in plaats daarvan elke live audiobron te herkennen, ook bronnen die later bijkomen. Alleen bronnen die het toestaan worden herkend: 'Allow analysis of the audio input' in de instellingen van de bron zelf (standaard aan; zet het uit voor een ingang waar niet naar geluisterd mag worden, zoals een microfoon)."
     },
     "audio_sources": {
       "label": "Te herkennen audiobronnen",
-      "description": "Kies de live bronnen om te herkennen, bijvoorbeeld je platenspeler. Er wordt niets herkend totdat je er een kiest."
+      "description": "Kies de live bronnen om te herkennen, bijvoorbeeld je platenspeler. Er wordt niets herkend totdat je er een kiest. De bron moet het ook toestaan: 'Allow analysis of the audio input' in de instellingen van de bron zelf (bijvoorbeeld het Sendspin-apparaat of VBAN Receiver; standaard aan)."
     },
     "silence_threshold_dbfs": {
       "label": "Stiltedrempel (dBFS)",

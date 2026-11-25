@@ -10,11 +10,11 @@
     },
     "all_audio_sources": {
       "label": "Recognize all live audio sources",
-      "description": "Advanced, off by default: normally you choose your sources (e.g. your turntable) under 'Audio sources to recognize'. Turn on only if every live audio source that allows analysis should be recognized."
+      "description": "Advanced, off by default: normally you choose your sources (e.g. your turntable) under 'Audio sources to recognize'. Turn on to recognize every live audio source instead, including ones added later. Only sources that allow it are recognized: 'Allow analysis of the audio input' in the source's own settings (on by default; turn it off for an input that should not be listened to, such as a microphone)."
     },
     "audio_sources": {
       "label": "Audio sources to recognize",
-      "description": "Choose the live sources to recognize, e.g. your turntable. Nothing is recognized until you choose one."
+      "description": "Choose the live sources to recognize, e.g. your turntable. Nothing is recognized until you choose one. The source must allow it too: 'Allow analysis of the audio input' in the source's own settings (e.g. the Sendspin device or VBAN Receiver; on by default)."
     },
     "silence_threshold_dbfs": {
       "label": "Silence threshold (dBFS)",

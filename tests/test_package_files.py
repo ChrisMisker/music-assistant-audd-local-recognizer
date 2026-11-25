@@ -1,5 +1,6 @@
 """Checks of the provider's files that need neither the server nor its packages (run everywhere)."""
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -65,3 +66,20 @@ def test_all_sources_is_off_by_default() -> None:
     entry = re.search(r"key=CONF_ALL_AUDIO_SOURCES,(.*?)label=", source, re.DOTALL)
     assert entry is not None
     assert "default_value=False" in entry.group(1)
+
+
+def test_every_setting_has_a_description() -> None:
+    # the "?" help in MA did not show for settings without a description in code (2026-11-25)
+    tree = ast.parse((PROVIDER / "provider.py").read_text(encoding="utf-8"))
+    entries = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "ConfigEntry"
+    ]
+    assert entries
+    missing = [
+        next(ast.unparse(k.value) for k in entry.keywords if k.arg == "key")
+        for entry in entries
+        if not any(k.arg == "description" for k in entry.keywords)
+    ]
+    assert missing == []

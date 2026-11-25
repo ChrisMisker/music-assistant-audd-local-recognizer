@@ -219,6 +219,12 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 depends_on=CONF_ALL_AUDIO_SOURCES,
                 depends_on_value=False,
                 label="Audio sources to recognize",
+                description=(
+                    "Choose the live sources to recognize, e.g. your turntable. Nothing is "
+                    "recognized until you choose one. The source must allow it too: 'Allow "
+                    "analysis of the audio input' in the source's own settings (e.g. the Sendspin "
+                    "device or VBAN Receiver; on by default)."
+                ),
             ),
             ConfigEntry(
                 key=CONF_ALL_AUDIO_SOURCES,
@@ -229,6 +235,14 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 required=False,
                 advanced=True,
                 label="Recognize all live audio sources",
+                description=(
+                    "Advanced, off by default: normally you choose your sources (e.g. your "
+                    "turntable) under 'Audio sources to recognize'. Turn on to recognize every "
+                    "live audio source instead, including ones added later. Only sources that "
+                    "allow it are recognized: 'Allow analysis of the audio input' in the source's "
+                    "own settings (on by default; turn it off for an input that should not be "
+                    "listened to, such as a microphone)."
+                ),
             ),
             ConfigEntry(
                 key=CONF_AUDD_THOROUGH,
@@ -282,6 +296,7 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 required=False,
                 advanced=True,
                 label="Minimum track gap (seconds)",
+                description="How long the silence must last to count as a track change.",
             ),
             ConfigEntry(
                 key=CONF_AUDD_SPEED,
