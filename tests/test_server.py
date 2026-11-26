@@ -37,4 +37,4 @@ async def test_removing_the_provider_deletes_its_database(mass: MusicAssistant) 
     storage = Path(mass.storage_path) / DOMAIN
     assert (storage / "fingerprints.sqlite3").exists()
     await mass.config.remove_provider_config(step.result["instance_id"])
-    assert not storage.exists()
+    assert not storage.exists(), sorted(str(p.relative_to(storage)) for p in storage.rglob("*"))

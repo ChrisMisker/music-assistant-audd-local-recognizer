@@ -104,6 +104,17 @@ NOT_ALLOWED_REASON = (
 )
 
 
+# how long unload waits for the load-time background work (artwork check, warm-up)
+UNLOAD_WAIT_SECONDS = 30.0
+
+
+def _remove_folder(folder: Path) -> None:
+    """Delete a folder and everything in it; one retry for a file created meanwhile."""
+    shutil.rmtree(folder, ignore_errors=True)
+    if folder.exists():
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def _allows_analysis(source: object) -> bool:
     """Return False only when the source says it may not be analysed (older servers: True)."""
     return getattr(source, "allow_audio_analysis", True) is not False
@@ -145,6 +156,8 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
         # Python's full garbage collection, run in a silence between tracks (see quiet_gc.py)
         self._quiet_gc = QuietCollector()
         self._gc_done_in_gap: set[str] = set()  # sessions whose current silence had its turn
+        # background work started at load (artwork check, warm-up); unload waits for it
+        self._load_tasks: list[asyncio.Task[Any]] = []
 
     async def handle_async_init(self) -> None:
         """Open the persistent fingerprint database off the event loop."""
@@ -190,9 +203,13 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 "provider's settings and choose your source (e.g. your turntable) under "
                 "'Audio sources to recognize', or turn on 'Recognize all live audio sources'."
             )
-        self.mass.create_task(self._clean_stored_artwork(), task_name=f"{self.domain}_artwork")
+        self._load_tasks.append(
+            self.mass.create_task(self._clean_stored_artwork(), task_name=f"{self.domain}_artwork")
+        )
         # imports and first-call costs now, not during the first track (they stall MA's loop)
-        self.mass.create_task(self._warm_up(), task_name=f"{self.domain}_warm_up")
+        self._load_tasks.append(
+            self.mass.create_task(self._warm_up(), task_name=f"{self.domain}_warm_up")
+        )
 
     async def _clean_stored_artwork(self) -> None:
         """Drop stored Deezer covers that turn out to be Deezer's empty "no cover" image."""
@@ -772,11 +789,20 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
             await self._stop_recording(session_id)
         if self._snapshot_task is not None:
             self._snapshot_task.cancel()
+        # let the load-time work finish (its worker threads cannot be cancelled): a database
+        # read in flight while the folder is deleted would create the file again (CI, 0.10)
+        if pending := [task for task in self._load_tasks if not task.done()]:
+            await asyncio.wait(pending, timeout=UNLOAD_WAIT_SECONDS)
         await super().unload(is_removed)
         if is_removed:
             storage_dir = self._storage_dir()
-            await asyncio.to_thread(shutil.rmtree, storage_dir, ignore_errors=True)
-            self.logger.info("Provider removed: deleted its fingerprint database %s", storage_dir)
+            await asyncio.to_thread(_remove_folder, storage_dir)
+            if await asyncio.to_thread(storage_dir.exists):
+                self.logger.warning("Provider removed, but %s could not be deleted", storage_dir)
+            else:
+                self.logger.info(
+                    "Provider removed: deleted its fingerprint database %s", storage_dir
+                )
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """Feed a chunk; returns immediately (heavy work runs in tasks)."""
