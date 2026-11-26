@@ -93,7 +93,7 @@ echo
 echo "== Watched discussions (comments, upvotes, last activity)"
 # owner/repo#number of discussions we opened or follow
 WATCHED_DISCUSSIONS=(
-  "esphome/feature-requests#3973"  # usb_audio microphone input gain (Lenco +10 dB clipping)
+  "esphome/feature-requests#3973"  # usb_audio microphone input gain (USB turntable input clips at +10 dB)
 )
 for item in "${WATCHED_DISCUSSIONS[@]}"; do
   repo="${item%#*}" number="${item##*#}"
