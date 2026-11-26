@@ -41,7 +41,19 @@ STACK_FRAMES = 14
 # loop that waits at a trivial point is waiting for the GIL, and the thread holding it is among them
 THREAD_FRAMES = 6
 # innermost functions of a thread that is only waiting (a pool worker between jobs, a timer)
-IDLE_FUNCTIONS = frozenset({"_worker", "wait", "_wait_for_tstate_lock", "get", "select", "_sample"})
+IDLE_FUNCTIONS = frozenset(
+    {
+        "_worker",  # concurrent.futures pool worker between jobs
+        "wait",
+        "_wait_for_tstate_lock",
+        "get",
+        "select",
+        "_sample",
+        "dequeue",  # logging QueueListener (seen live 2026-11-26)
+        "_connection_worker_thread",  # aiosqlite (MA's own databases)
+        "_run_safe_shutdown_loop",  # pycares (DNS)
+    }
+)
 
 
 def _format_stack(frame: Any) -> str:
