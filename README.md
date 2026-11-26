@@ -16,6 +16,17 @@ recognized **locally**, without any external service.
 
 ## What's new
 
+**0.10.0** (2026-11-26)
+- **No more hiccups in the music caused by the recognizer:** it does far less work on Music
+  Assistant's main loop, so the live input no longer gets short gaps of silence.
+- **Fewer wrong titles** (7 in 318 known tracks before, 0 in the same replays now), and a
+  **Wi-Fi drop of up to about a minute no longer ends the track**.
+- **Needle drops on gapless records** and titles with an implausible position are checked once
+  more with AudD (within the usual limit of 20 requests per track).
+- Every setting has a help text; a source that does not allow analysis is greyed out.
+- ⚠️ The database is upgraded on the first start; **going back to 0.9 afterwards starts with an
+  empty database** (the old file is kept). See the [CHANGELOG](CHANGELOG.md).
+
 **0.9.0** (2026-11-21)
 - **Records without silence between tracks** (live albums, continuous sides) and **long pieces**
   now work: the provider uses the track length to find the end, corrects itself when the next
@@ -35,16 +46,6 @@ recognized **locally**, without any external service.
   lines up in time with an earlier play adds up over the whole track.
 - ⚠️ Fast start (on by default) uses **~35 % more disk space**; you can turn it off in the settings.
 - Fixes: more cases of missing album art; no more dependency warnings in the log.
-
-**0.7.0** (2026-11-18)
-- ⚠️ **Choose your audio source:** "Recognize all live audio sources" is now off by default. After
-  updating, open the provider's settings and select your source (e.g. your turntable), or nothing
-  is recognized.
-- **Speed correction for AudD**: if your turntable runs a little fast or slow, AudD misses many
-  tracks. With a -2 % correction our test went from ~6 to **10 of 10** tracks identified. See
-  [Questions](#questions).
-- Faster local recognition when you replay a record; the database stays small (two plays per
-  track); updates can't break the database; album art fixes; debugging options.
 
 All changes: [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/ChrisMisker/music-assistant-audd-local-recognizer/releases).
@@ -148,7 +149,12 @@ How many requests to expect:
   in a row). A 4-minute track that AudD doesn't know costs about 5 requests. On live and
   gapless records, where tracks run into each other, the advanced setting *Ask AudD more
   often* asks every 30 seconds instead (about 8 requests for such a track).
-- Requests stop as soon as the track is identified. There are never two requests within 30
+- **Occasionally one extra request after AudD identified a track:** when AudD's position in the
+  song looks implausible (the title is checked once more), or says the track you dropped the
+  needle into has already ended (AudD is asked at that moment, up to 3 tries, so the next track
+  is named). These count within the 20 per track. A known track without a stored length gets
+  one request, once, to learn it.
+- Requests stop as soon as the track is identified (apart from the checks above). There are never two requests within 30
   seconds of each other. After an AudD or network error the provider pauses (1 minute, doubling
   up to 15 minutes).
 - Example: learning 10 LPs (~100 tracks) takes roughly 100–400 requests, depending on how well
@@ -165,7 +171,8 @@ settings in Music Assistant.
 - **Only audio of music that isn't recognized locally** is sent to AudD: one sample of about
   12 seconds of mono audio per request, together with your API token. A track may need several
   requests (at most 20, see [How many requests to expect](#about-audd-a-paid-service-with-a-free-trial)),
-  so several samples of the same track can be sent. Nothing else is sent.
+  so several samples of the same track can be sent, also once or a few times shortly after AudD
+  identified it, to check the title or the end of a needle-dropped track. Nothing else is sent.
 - **Known tracks are recognized locally**, without AudD. One exception: a known track whose
   length is not stored yet (for example one learned before version 0.9) gets **one** AudD request,
   once, to learn its length (one ~12-second sample, the first time you play it again). After
@@ -217,7 +224,7 @@ Things to keep in mind:
 | *Advanced:* **Resume threshold (dBFS)** | Audio at or above this level ends a gap (default −35). |
 | *Advanced:* **Minimum track gap (seconds)** | How long the silence must last to count as a track change (default 2). |
 | *Advanced:* **Speed correction for AudD (%)** | Default 0. If AudD misses many tracks, your turntable may run a little fast or slow: AudD's samples are then played this much faster or slower (e.g. **-2** for a turntable that runs ~2 % fast). When AudD misses, retries also try 1 % slower and faster. Local recognition is not affected. |
-| *Advanced:* **Record the input stream for debugging** | Off by default. Temporarily records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session, in the provider's data folder, up to the maximum below; then it stops. For troubleshooting recognition only: every recording is deleted automatically 3 days after it started (meanwhile it is included in Home Assistant backups). |
+| *Advanced:* **Record the input stream for debugging** | Off by default. Temporarily records the live input exactly as the recognizer receives it (WAV, ~10 MB per minute), plus the recognizer's log of each session and a copy of the fingerprint database at its start (about the size of the database; one more copy is kept between sessions), in the provider's data folder, up to the maximum below; then it stops. For troubleshooting recognition only: every recording is deleted automatically 3 days after it started (meanwhile it is included in Home Assistant backups). |
 | *Advanced:* **Maximum recording (minutes)** | Total length of all recordings kept (default 60, up to 240 = 4 hours; ~10 MB per minute). |
 | *Advanced:* **Save AudD samples for debugging** | Off by default. Keeps the last 250 samples sent to AudD (WAV, plus their outcome and level/clipping/left-right measurements) in the provider's data folder, for troubleshooting. They stay on your server. |
 
@@ -245,8 +252,9 @@ These are known and documented on purpose. Some are being worked on.
   record collection's metadata is on the roadmap.
 - **Recognition takes a little time**: up to about a minute per track for new music, somewhat
   less for music you've played before. See [What to expect](#what-to-expect).
-- **During silence the last track stays visible** until the next one is recognized. Music
-  Assistant has no way yet to withdraw it earlier.
+- **During a short silence between tracks the last title stays visible.** After 30 seconds of
+  silence (the record has ended), or when the next track is not recognized at its first check,
+  Music Assistant shows your source again.
 - **The time shown on the player** is the position in the song when the provider knows where
   the song started and how long it is; otherwise it is the time since the source started.
 - **Artwork is best effort:** taken from Apple Music, Spotify or Deezer when AudD provides it.
@@ -297,8 +305,8 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `Expected end of … at 245s` | The track's length is known: learning stops a few seconds before that moment. |
 | `Track boundary (no gap): …` | The track should have ended but there was no silence (a gapless record): listening for the next track. |
 | `No longer showing the previous track: …` | A new track started that is not recognized yet: Music Assistant shows the source again instead of the previous title. |
-| `Stream dropout: … ignored` | The audio stream briefly delivered digital silence (a network/stream hiccup, not your record): the current track continues. |
-| `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (5+ needed). |
+| `Stream dropout: … ignored` | The audio stream delivered digital silence (a network/stream hiccup, not your record): the current track continues (up to 60 s in an identified track, 10 s otherwise). |
+| `LOCAL HIT: … votes=8 ratio=0.889` | Recognized locally. More votes means more certain (6+ needed in one check). |
 | `LOCAL CANDIDATE: … votes=1 -> rejected` | A coincidental match, correctly ignored. |
 | `AudD attempt n/20` / `AudD HIT` / `AudD: no match` | An AudD request and its outcome. |
 | `Identified … via local after 31s` | The track was recognized (locally or via AudD), and when. |
@@ -306,6 +314,9 @@ The provider logs what it does and why at INFO level, in the Music Assistant log
 | `LOCAL HIT: … lookups=3 shift=+0.42s … -> accepted (time-consistent)` | Recognized from evidence added up over several lookups. |
 | `Learned … references` | Fingerprints stored for future local recognition. |
 | `AudD: no match: …` | AudD found nothing; the reason follows (e.g. `no result`, `error 300`). |
+| `AudD sample has … stream hole(s)` | The stream had many short dropouts: the provider waits once for a cleaner sample (or sends it anyway). |
+| `Asking AudD whether … has ended` | After a needle drop, AudD's position said the track has ended: AudD is asked once more (up to 3 tries). |
+| `Event loop stalled … ms` | Only with input recording or debug logging on: Music Assistant's main loop was late; the line names what the provider was doing. Stalls during the silence between tracks are harmless. |
 | `No AudD API token configured` | Only local recognition is possible. |
 
 If nothing is recognized, check that the source allows audio analysis (in recent Music Assistant

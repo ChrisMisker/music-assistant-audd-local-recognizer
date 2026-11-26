@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 STORAGE_SUBDIR = "audd_local_recognizer"
 DEBUG_SUBDIR = "debug"
 RECORDINGS_SUBDIR = "recordings"
@@ -350,8 +350,10 @@ class AudDLocalRecognizerProvider(AudioAnalysisProvider):
                 label="Record the input stream for debugging",
                 description=(
                     "Temporarily record the live input exactly as the recognizer receives it "
-                    "(WAV, about 10 MB per minute), with the recognizer's log of each session, in "
-                    "the provider's data folder (recordings/), up to the maximum below; then it "
+                    "(WAV, about 10 MB per minute), with the recognizer's log of each session and "
+                    "a copy of the fingerprint database at its start (about the size of the "
+                    "database), in the provider's data folder (recordings/), up to the maximum "
+                    "below; then it "
                     "stops by itself. Only for troubleshooting recognition: every recording is "
                     f"deleted automatically {RECORDING_KEEP_DAYS} days after it started. The files "
                     "stay on this server (and are included in Home Assistant backups meanwhile)."

@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.10.0 (2026-11-26)
+
+More reliable and lighter: fewer wrong titles, no more hiccups in the music caused by the
+recognizer, a track that survives a Wi-Fi drop, and a database that is upgraded in place.
+
+### ⚠️ Worth knowing
+
+- **The fingerprint database is upgraded on the first start** (a new column; takes a fraction of
+  a second, nothing is lost; the log says `Fingerprint database upgraded from schema version 1 to
+  2`). **Going back to 0.9 afterwards starts with an empty database:** 0.9 cannot read the new
+  format and sets the file aside as `fingerprints.sqlite3.incompatible` in the provider's data
+  folder (kept, not deleted). Stay on 0.10 or later to keep what was learned.
+- **A source must allow analysis.** In the source list, a source whose own setting *Allow
+  analysis of the audio input* is off is now marked *(analysis not allowed)* and greyed out.
+  Turn that setting on in the source's own settings (the Sendspin player with the audio input,
+  or the VBAN Receiver) to choose it.
+- **AudD requests:** usually unchanged. A few new checks can each cost one extra request, and all
+  of them count within the existing limit of 20 requests per track, never closer than 30 seconds
+  apart (see *Changed* below).
+
+### Improved
+
+- **No more hiccups in the music caused by the recognizer.** Music Assistant runs every provider
+  in one process; when the recognizer kept it busy too long, the live input got short gaps of
+  silence (about 0.1 s) that you could hear on your speakers. Fingerprinting and adding up the
+  evidence now take a fraction of the work (identical fingerprints), heavy work is kept off
+  Music Assistant's main loop, and Python's memory clean-up is done in the silence between
+  tracks. In tests: before, 46 audible hiccups in 40 minutes of a live record; now usually none
+  in the music on a whole side.
+- **Fewer wrong titles.** A match that adds up over several checks now also needs enough
+  fingerprints of the ordinary kind (not only the extra ones stored for the first 30 seconds).
+  Replayed over all test recordings: 7 wrong titles in 318 known tracks before, 0 now; a few
+  tracks are recognized via AudD a little later instead (~15 s).
+- **A Wi-Fi drop no longer ends the track.** When the audio input reconnects, Music Assistant
+  delivers silence for a while (in a test, Wi-Fi off for 30 seconds gave 45 seconds of
+  silence). An identified track now continues through up to 60 seconds of such digital silence:
+  the title stays and nothing is asked again. Longer still ends it as before.
+- **AudD gets cleaner samples.** When the stream has many short dropouts (for example on weak
+  Wi-Fi), the provider waits once for a cleaner moment before sending a sample.
+- **Needle drops on records without gaps:** when AudD's position in the song says the track you
+  dropped the needle into has already ended, AudD is asked once more at that moment (up to 3
+  tries), so the next track gets its own title instead of running on under the old one.
+- **A title with an implausible position** (about 4 % of AudD answers, e.g. a hidden track that
+  shares an intro) is checked once more a little later.
+- **Track lengths on gapless records:** the length of a track is also measured when the next
+  track starts without a gap, so the end of the next play is found more precisely.
+
+### Changed
+
+- Every setting now has a help text (the "?" in the settings).
+- **Troubleshooting** (advanced): *Maximum recording* now goes up to 240 minutes (was 1440).
+  With *Record the input stream* on, the provider also keeps one extra copy of the fingerprint
+  database in its data folder (about the size of the database), so that the next recording can
+  start without copying it again; and it logs short timing lines about its own work.
+- Fixed: the README said no audio of known tracks is sent to AudD; a known track without a stored
+  length is sent once (0.9 behaviour, now documented).
+
 ## 0.9.0 (2026-11-21)
 
 Records without silence between tracks, live records, long pieces and needle drops now work much
